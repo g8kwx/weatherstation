@@ -1,4 +1,5 @@
 #include <unity.h>
+#include <string>
 #include "weather_client.h"
 #include "../mocks/mocks.cpp"
 #include "../../src/time_utils.cpp"
@@ -143,6 +144,125 @@ void test_weather_client_parse_metoffice_hourly_json(void) {
     TEST_ASSERT_EQUAL_FLOAT(8.947745f, imperialData.windSpeed);
     TEST_ASSERT_EQUAL_FLOAT(61.7f, imperialData.hourly[1].temperature);
     settings.setUnitSystem(UNIT_METRIC);
+}
+
+void test_weather_client_metoffice_descriptions_use_api_codes(void) {
+    const int metOfficeCodes[] = {13, 14, 15};
+    const char* expectedDescriptions[] = {
+        "Heavy rain",
+        "Heavy rain shower (night)",
+        "Heavy rain shower (day)"
+    };
+    const int expectedWmoCodes[] = {65, 82, 82};
+    const time_t now = parseUtcDtTxt("2026-10-17 12:30:00");
+
+    for (size_t i = 0; i < sizeof(metOfficeCodes) / sizeof(metOfficeCodes[0]); i++) {
+        char hourlyJson[384];
+        snprintf(hourlyJson, sizeof(hourlyJson),
+            "{\"features\":[{\"properties\":{\"timeSeries\":["
+            "{\"time\":\"2026-10-17T12:00Z\",\"screenTemperature\":15.5,"
+            "\"screenRelativeHumidity\":80,\"significantWeatherCode\":%d}"
+            "]}}]}",
+            metOfficeCodes[i]);
+
+        WeatherData data = {};
+        TEST_ASSERT_TRUE(WeatherClient::parseMetOfficeHourlyJson(hourlyJson, data, now));
+        TEST_ASSERT_EQUAL(expectedWmoCodes[i], data.weatherCode);
+        TEST_ASSERT_EQUAL_STRING(expectedDescriptions[i], data.status.c_str());
+    }
+
+    String originalTimezone = settings.getTimezone();
+    settings.setTimezone("UTC0");
+    const char* dailyJson = "{"
+        "\"features\":[{\"properties\":{\"timeSeries\":["
+            "{\"time\":\"2026-10-17T00:00Z\",\"dayMaxScreenTemperature\":18.0,"
+            "\"nightMinScreenTemperature\":11.0,\"daySignificantWeatherCode\":14}"
+        "]}}]}";
+    WeatherData dailyData = {};
+    TEST_ASSERT_TRUE(WeatherClient::parseMetOfficeDailyJson(dailyJson, dailyData, now));
+    TEST_ASSERT_EQUAL_STRING("Heavy rain shower (night)", dailyData.forecast[0].status.c_str());
+    settings.setTimezone(originalTimezone);
+}
+
+void test_weather_client_parse_bpf_coverage_json(void) {
+    settings.setUnitSystem(UNIT_METRIC);
+    String originalTimezone = settings.getTimezone();
+    settings.setTimezone("UTC0");
+    const char* percentileJson = R"json({
+        "coverages":[
+            {"id":"airTemperature1p5m","domain":{"axes":{
+                "t":{"values":["2026-01-01T00:00Z","2026-01-01T01:00Z","2026-01-02T00:00Z","2026-01-03T00:00Z"]},
+                "percentiles":{"values":[10,50,90]}
+            }},"ranges":{"airTemperature1p5m":{
+                "axisNames":["percentiles","t"],"shape":[3,4],
+                "values":[280,281,282,283,290,291,292,293,300,301,302,303]
+            }}},
+            {"id":"relativeHumidity1p5m","domain":{"axes":{
+                "t":{"values":["2026-01-01T00:00Z","2026-01-01T01:00Z","2026-01-02T00:00Z","2026-01-03T00:00Z"]}
+            }},"ranges":{"relativeHumidity1p5m":{
+                "axisNames":["t"],"shape":[4],"values":[75,74,73,72]
+            }}},
+            {"id":"weatherCodePt01h","domain":{"axes":{
+                "t":{"values":["2026-01-01T00:00Z","2026-01-01T01:00Z","2026-01-02T00:00Z","2026-01-03T00:00Z"]}
+            }},"ranges":{"weatherCodePt01h":{
+                "axisNames":["t"],"shape":[4],"values":[14,13,3,1]
+            }}},
+            {"id":"windSpeed10m","domain":{"axes":{
+                "t":{"values":["2026-01-01T00:00Z","2026-01-01T01:00Z","2026-01-02T00:00Z","2026-01-03T00:00Z"]}
+            }},"ranges":{"windSpeed10m":{
+                "axisNames":["t"],"shape":[4],"values":[3.6,4,5,6]
+            }}},
+            {"id":"windFromDirection10mMean","domain":{"axes":{
+                "t":{"values":["2026-01-01T00:00Z","2026-01-01T01:00Z","2026-01-02T00:00Z","2026-01-03T00:00Z"]}
+            }},"ranges":{"windFromDirection10mMean":{
+                "axisNames":["t"],"shape":[4],"values":[225,230,235,240]
+            }}}
+        ]
+    })json";
+    const char* probabilityJson = R"json({
+        "coverages":[{
+            "id":"probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01h",
+            "domain":{"axes":{
+                "threshold":{"values":[0.1,1]},
+                "t":{"values":[
+                    "2026-01-01T00:00Z","2026-01-01T01:00Z","2026-01-02T00:00Z","2026-01-03T00:00Z"
+                ]}
+            }},
+            "ranges":{"probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01h":{
+                "axisNames":["threshold","t"],"shape":[2,4],
+                "values":[0.1,0.25,0.5,0.75,0.01,0.02,0.03,0.04]
+            }}
+        }]
+    })json";
+    WeatherData data = {};
+    time_t now = parseUtcDtTxt("2026-01-01 00:30:00");
+    std::string expandedPercentileJson(percentileJson);
+    expandedPercentileJson.pop_back();
+    expandedPercentileJson += ",\"ignored\":[";
+    for (size_t i = 0; i < 8000; i++) {
+        expandedPercentileJson += "0,";
+    }
+    expandedPercentileJson += "0]}";
+
+    TEST_ASSERT_TRUE(WeatherClient::parseBlendedProbabilisticJson(
+        expandedPercentileJson.c_str(), probabilityJson, data, now));
+    TEST_ASSERT_TRUE(data.valid);
+    TEST_ASSERT_EQUAL_FLOAT(16.85f, data.temperature);
+    TEST_ASSERT_EQUAL(75, data.humidity);
+    TEST_ASSERT_EQUAL_STRING("Heavy rain shower (night)", data.status.c_str());
+    TEST_ASSERT_EQUAL(82, data.weatherCode);
+    TEST_ASSERT_EQUAL_FLOAT(12.96f, data.windSpeed);
+    TEST_ASSERT_EQUAL(225, data.windDirection);
+    TEST_ASSERT_EQUAL_FLOAT(16.85f, data.hourly[0].temperature);
+    TEST_ASSERT_EQUAL(10, data.hourly[0].precipitationProbability);
+    TEST_ASSERT_EQUAL_FLOAT(17.85f, data.hourly[1].temperature);
+    TEST_ASSERT_EQUAL(25, data.hourly[1].precipitationProbability);
+    TEST_ASSERT_EQUAL_STRING("Today", data.forecast[0].dayName.c_str());
+    TEST_ASSERT_EQUAL_FLOAT(16.85f, data.forecast[0].tempMin);
+    TEST_ASSERT_EQUAL_FLOAT(17.85f, data.forecast[0].tempMax);
+    TEST_ASSERT_EQUAL_STRING("Tmrw", data.forecast[1].dayName.c_str());
+    TEST_ASSERT_EQUAL_STRING("Sat", data.forecast[2].dayName.c_str());
+    settings.setTimezone(originalTimezone);
 }
 
 void test_weather_client_metoffice_humidity_falls_back_to_nearest_hour(void) {
@@ -800,6 +920,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_weather_client_zip_code_initialization);
     RUN_TEST(test_weather_client_parse_weather_json_custom);
     RUN_TEST(test_weather_client_parse_metoffice_hourly_json);
+    RUN_TEST(test_weather_client_metoffice_descriptions_use_api_codes);
+    RUN_TEST(test_weather_client_parse_bpf_coverage_json);
     RUN_TEST(test_weather_client_metoffice_humidity_falls_back_to_nearest_hour);
     RUN_TEST(test_weather_client_parse_metoffice_daily_json);
     RUN_TEST(test_weather_client_parse_thingspeak_temperature_json);

@@ -7,8 +7,8 @@
 #include <math.h>
 #include <stdlib.h>
 
-#ifndef METOFFICE_API_KEY
-#define METOFFICE_API_KEY ""
+#ifndef METOFFICE_BPF_API_KEY
+#define METOFFICE_BPF_API_KEY ""
 #endif
 
 extern SettingsManager settings;
@@ -18,9 +18,27 @@ extern SettingsManager settings;
 #include <HTTPClient.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
+#include <Preferences.h>
 #endif
 
 namespace {
+
+struct BpfTimeSelection {
+    size_t currentIndex;
+    size_t timeCount;
+    char currentTimestamp[32];
+};
+
+bool parseBlendedPercentileDocument(JsonVariantConst root, WeatherData& data,
+                                   time_t ref_time, int (*toWmoCode)(int),
+                                   BpfTimeSelection& selection);
+bool parseBlendedProbabilityDocument(JsonVariantConst root, WeatherData& data,
+                                     time_t ref_time,
+                                     const BpfTimeSelection& selection);
+bool parseBlendedProbabilisticDocuments(JsonVariantConst percentileRoot,
+                                        JsonVariantConst probabilityRoot,
+                                        WeatherData& data, time_t ref_time,
+                                        int (*toWmoCode)(int));
 
 const char* const METOFFICE_ROOT_CA =
     "-----BEGIN CERTIFICATE-----\n"
@@ -94,6 +112,42 @@ float metOfficeTemperature(float celsius) {
         : celsius;
 }
 
+String metOfficeWeatherDesc(int code) {
+    switch (code) {
+        case 0: return "Clear night";
+        case 1: return "Sunny day";
+        case 2: return "Partly cloudy (night)";
+        case 3: return "Partly cloudy (day)";
+        case 5: return "Mist";
+        case 6: return "Fog";
+        case 7: return "Cloudy";
+        case 8: return "Overcast";
+        case 9: return "Light rain shower (night)";
+        case 10: return "Light rain shower (day)";
+        case 11: return "Drizzle";
+        case 12: return "Light rain";
+        case 13: return "Heavy rain";
+        case 14: return "Heavy rain shower (night)";
+        case 15: return "Heavy rain shower (day)";
+        case 16: return "Sleet shower (night)";
+        case 17: return "Sleet shower (day)";
+        case 18: return "Sleet";
+        case 19: return "Hail shower (night)";
+        case 20: return "Hail shower (day)";
+        case 21: return "Hail";
+        case 22: return "Light snow shower (night)";
+        case 23: return "Light snow shower (day)";
+        case 24: return "Light snow";
+        case 25: return "Heavy snow shower (night)";
+        case 26: return "Heavy snow shower (day)";
+        case 27: return "Heavy snow";
+        case 28: return "Thunder shower (night)";
+        case 29: return "Thunder shower (day)";
+        case 30: return "Thunder";
+        default: return "Unknown";
+    }
+}
+
 float metOfficeWindSpeed(float metresPerSecond) {
     return metresPerSecond * (settings.getUnitSystem() == UNIT_IMPERIAL
         ? 2.2369363f
@@ -142,11 +196,150 @@ String shortDayName(const char* date) {
     return days[index];
 }
 
+JsonVariantConst findBpfCoverage(JsonVariantConst root, const char* parameter) {
+    JsonArrayConst coverages = root["coverages"].as<JsonArrayConst>();
+    for (JsonVariantConst coverage : coverages) {
+        const char* id = coverage["id"] | "";
+        if (strcmp(id, parameter) == 0) {
+            return coverage;
+        }
+    }
+    return JsonVariantConst();
+}
+
+bool readBpfCoverageValue(JsonVariantConst root, const char* parameter,
+                          size_t timeIndex, const char* statisticAxis,
+                          const char* statisticValue, float& value) {
+    JsonVariantConst coverage = findBpfCoverage(root, parameter);
+    if (coverage.isNull()) return false;
+
+    JsonVariantConst axes = coverage["domain"]["axes"];
+    JsonArrayConst timeValues = axes["t"]["values"].as<JsonArrayConst>();
+    if (timeIndex >= timeValues.size()) return false;
+
+    JsonVariantConst range = coverage["ranges"][parameter];
+    JsonArrayConst axisNames = range["axisNames"].as<JsonArrayConst>();
+    JsonArrayConst shape = range["shape"].as<JsonArrayConst>();
+    JsonArrayConst values = range["values"].as<JsonArrayConst>();
+    if (axisNames.isNull() || shape.size() != axisNames.size() ||
+        values.isNull() || axisNames.size() == 0) {
+        return false;
+    }
+
+    size_t offset = 0;
+    size_t stride = 1;
+    bool hasTimeAxis = false;
+    for (size_t reverseIndex = axisNames.size(); reverseIndex > 0; reverseIndex--) {
+        size_t index = reverseIndex - 1;
+        const char* axisName = axisNames[index] | "";
+        size_t axisSize = shape[index] | 0;
+        size_t coordinate = 0;
+
+        if (strcmp(axisName, "t") == 0) {
+            coordinate = timeIndex;
+            hasTimeAxis = true;
+        } else if (statisticAxis != nullptr &&
+                   (strcmp(axisName, statisticAxis) == 0 ||
+                    (strcmp(statisticAxis, "percentiles") == 0 &&
+                     strcmp(axisName, "percentile") == 0))) {
+            JsonArrayConst selections = axes[axisName]["values"].as<JsonArrayConst>();
+            if (selections.isNull()) return false;
+            if (statisticValue != nullptr) {
+                coordinate = selections.size();
+                for (size_t i = 0; i < selections.size(); i++) {
+                    JsonVariantConst selected = selections[i];
+                    const char* selectedText = selected.as<const char*>();
+                    if ((selectedText != nullptr && strcmp(selectedText, statisticValue) == 0) ||
+                        ((selected.is<float>() || selected.is<int>()) &&
+                         fabsf(selected.as<float>() - strtof(statisticValue, nullptr)) < 0.001f)) {
+                        coordinate = i;
+                        break;
+                    }
+                }
+                if (coordinate == selections.size()) return false;
+            }
+        }
+
+        if (axisSize == 0 || coordinate >= axisSize) return false;
+        offset += coordinate * stride;
+        stride *= axisSize;
+    }
+    if (!hasTimeAxis || stride != values.size() || offset >= values.size() ||
+        values[offset].isNull()) {
+        return false;
+    }
+
+    JsonVariantConst rawValue = values[offset];
+    if (!rawValue.is<float>() && !rawValue.is<int>()) return false;
+    value = rawValue.as<float>();
+    return isfinite(value);
+}
+
+bool getBpfTimeValues(JsonVariantConst root, const char* parameter,
+                      JsonArrayConst& timeValues) {
+    JsonVariantConst coverage = findBpfCoverage(root, parameter);
+    if (coverage.isNull()) return false;
+    timeValues = coverage["domain"]["axes"]["t"]["values"].as<JsonArrayConst>();
+    return !timeValues.isNull() && timeValues.size() > 0;
+}
+
 #ifndef NATIVE_TEST
-bool requestMetOfficeForecast(const char* frequency, const char* latitude,
-                              const char* longitude, String& payload) {
-    if (strlen(METOFFICE_API_KEY) == 0) {
-        Serial.println("[Weather] Met Office API key is not configured.");
+const uint32_t BPF_CALL_WINDOW_SECONDS = 24 * 60 * 60;
+const size_t BPF_CALL_LIMIT = 50;
+
+bool reserveBpfCall() {
+    time_t now = time(nullptr);
+    uint32_t requestTimes[BPF_CALL_LIMIT] = {};
+    if (now < 1577836800) {
+        Serial.println("[Weather] Cannot enforce BPF daily quota before time synchronization.");
+        return false;
+    }
+
+    Preferences preferences;
+    if (!preferences.begin("bpfquota", false)) {
+        Serial.println("[Weather] Unable to open BPF quota storage.");
+        return false;
+    }
+
+    size_t storedLength = preferences.getBytesLength("calls");
+    if (storedLength == sizeof(requestTimes)) {
+        preferences.getBytes("calls", requestTimes, sizeof(requestTimes));
+    }
+
+    size_t activeCalls = 0;
+    for (size_t i = 0; i < BPF_CALL_LIMIT; i++) {
+        uint32_t timestamp = requestTimes[i];
+        if (timestamp != 0 &&
+            (static_cast<uint32_t>(now) < timestamp ||
+             static_cast<uint32_t>(now) - timestamp < BPF_CALL_WINDOW_SECONDS)) {
+            requestTimes[activeCalls++] = timestamp;
+        }
+    }
+    if (activeCalls >= BPF_CALL_LIMIT) {
+        preferences.end();
+        Serial.println("[Weather] BPF rolling 24-hour request limit reached.");
+        return false;
+    }
+
+    requestTimes[activeCalls++] = static_cast<uint32_t>(now);
+    for (size_t i = activeCalls; i < BPF_CALL_LIMIT; i++) {
+        requestTimes[i] = 0;
+    }
+    size_t savedLength = preferences.putBytes("calls", requestTimes, sizeof(requestTimes));
+    preferences.end();
+    if (savedLength != sizeof(requestTimes)) {
+        Serial.println("[Weather] Unable to save BPF quota usage.");
+        return false;
+    }
+    return true;
+}
+
+bool requestBlendedForecast(const char* collection, const char* parameters,
+                            const char* percentiles, const char* latitude,
+                            const char* longitude, time_t start, time_t end,
+                            DynamicJsonDocument& response, bool probabilityCollection) {
+    if (strlen(METOFFICE_BPF_API_KEY) == 0) {
+        Serial.println("[Weather] Met Office BPF API key is not configured.");
         return false;
     }
     if (!waitForSystemTime()) {
@@ -154,35 +347,125 @@ bool requestMetOfficeForecast(const char* frequency, const char* latitude,
         return false;
     }
 
-    String url = "https://data.hub.api.metoffice.gov.uk/sitespecific/v0/point/";
-    url += frequency;
-    url += "?latitude=";
-    url += latitude;
-    url += "&longitude=";
-    url += longitude;
-    url += "&excludeParameterMetadata=true&includeLocationName=true";
+    struct tm startUtc;
+    struct tm endUtc;
+    if (gmtime_r(&start, &startUtc) == nullptr || gmtime_r(&end, &endUtc) == nullptr) {
+        Serial.println("[Weather] Unable to format BPF forecast time range.");
+        return false;
+    }
+    char startText[24];
+    char endText[24];
+    strftime(startText, sizeof(startText), "%Y-%m-%dT%H:%M:%SZ", &startUtc);
+    strftime(endText, sizeof(endText), "%Y-%m-%dT%H:%M:%SZ", &endUtc);
 
+    String url = "https://data.hub.api.metoffice.gov.uk/mo-blended-prob-forecast-feature-svc/2.0.0/collections/";
+    url += collection;
+    url += "/instances/blended/position?coords=POINT%28";
+    url += longitude;
+    url += "%20";
+    url += latitude;
+    url += "%29&parameter-name=";
+    url += parameters;
+    if (percentiles != nullptr && percentiles[0] != '\0') {
+        url += "&percentiles=";
+        url += percentiles;
+    }
+    url += "&datetime=";
+    url += startText;
+    url += "%2F";
+    url += endText;
+
+    if (!reserveBpfCall()) {
+        return false;
+    }
     WiFiClientSecure client;
     client.setCACert(METOFFICE_ROOT_CA);
     HTTPClient http;
     http.setTimeout(20000);
+    http.useHTTP10(true);
+    const char* responseHeaderNames[] = {
+        "Content-Length",
+        "Transfer-Encoding",
+        "Connection",
+        "Content-Type"
+    };
+    http.collectHeaders(responseHeaderNames, sizeof(responseHeaderNames) / sizeof(responseHeaderNames[0]));
     if (!http.begin(client, url)) {
-        Serial.printf("[Weather] Unable to connect to Met Office %s forecast.\n", frequency);
+        Serial.printf("[Weather] Unable to connect to Met Office BPF collection %s.\n", collection);
         return false;
     }
 
     http.addHeader("Accept", "application/json");
-    http.addHeader("apikey", METOFFICE_API_KEY);
+    http.addHeader("apikey", METOFFICE_BPF_API_KEY);
     int httpCode = http.GET();
-    bool success = false;
     if (httpCode == HTTP_CODE_OK) {
-        payload = http.getString();
-        success = true;
+        int responseSize = http.getSize();
+        int availableBytes = http.getStream().available();
+        Serial.printf("[Weather] Met Office BPF collection %s response: HTTP/1.0 Content-Length=%d, Transfer-Encoding=%s, stream available=%d.\n",
+            collection, responseSize, http.header("Transfer-Encoding").c_str(), availableBytes);
+        if (responseSize == 0 || availableBytes == 0) {
+            Serial.printf("[Weather] Met Office BPF collection %s returned an empty response stream.\n",
+                collection);
+            http.end();
+            return false;
+        }
+
+        StaticJsonDocument<2048> filter;
+        JsonObject coverageFilter = filter["coverages"][0];
+        coverageFilter["id"] = true;
+        JsonObject axesFilter = coverageFilter["domain"]["axes"];
+        axesFilter["t"]["values"][0] = true;
+        if (probabilityCollection) {
+            const char* parameter =
+                "probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01h";
+            axesFilter["threshold"]["values"][0] = true;
+            axesFilter["thresholds"]["values"][0] = true;
+            coverageFilter["ranges"][parameter]["axisNames"][0] = true;
+            coverageFilter["ranges"][parameter]["shape"][0] = true;
+            coverageFilter["ranges"][parameter]["values"][0] = true;
+        } else {
+            const char* parametersToKeep[] = {
+                "airTemperature1p5m",
+                "relativeHumidity1p5m",
+                "weatherCodePt01h",
+                "windSpeed10m",
+                "windFromDirection10mMean"
+            };
+            axesFilter["percentiles"]["values"][0] = true;
+            axesFilter["percentile"]["values"][0] = true;
+            for (const char* parameter : parametersToKeep) {
+                coverageFilter["ranges"][parameter]["axisNames"][0] = true;
+                coverageFilter["ranges"][parameter]["shape"][0] = true;
+                coverageFilter["ranges"][parameter]["values"][0] = true;
+            }
+        }
+        if (filter.overflowed()) {
+            Serial.printf("[Weather] BPF %s JSON filter overflow.\n", collection);
+            http.end();
+            return false;
+        }
+
+        String transferEncoding = http.header("Transfer-Encoding");
+        if (transferEncoding.equalsIgnoreCase("chunked")) {
+            Serial.printf("[Weather] Met Office BPF collection %s still uses chunked transfer with HTTP/1.0.\n",
+                collection);
+            http.end();
+            return false;
+        }
+
+        DeserializationError error = deserializeJson(
+            response, http.getStream(), DeserializationOption::Filter(filter));
+        if (error) {
+            Serial.printf("[Weather] Met Office BPF collection %s JSON error: %s.\n",
+                collection, error.c_str());
+            http.end();
+            return false;
+        }
     } else {
-        Serial.printf("[Weather] Met Office %s forecast failed: HTTP %d\n", frequency, httpCode);
+        Serial.printf("[Weather] Met Office BPF collection %s failed: HTTP %d\n", collection, httpCode);
     }
     http.end();
-    return success;
+    return httpCode == HTTP_CODE_OK;
 }
 #endif
 
@@ -370,22 +653,38 @@ WeatherData WeatherClient::fetchWeather() {
         return data;
     }
 
-    String hourlyPayload;
-    if (!requestMetOfficeForecast("hourly", lat, lng, hourlyPayload) ||
-        !parseMetOfficeHourlyJson(hourlyPayload.c_str(), data)) {
+    time_t now = time(nullptr);
+    BpfTimeSelection timeSelection = {};
+    {
+        DynamicJsonDocument percentileResponse(32768);
+        if (!requestBlendedForecast(
+                "uk-spot-percentiles",
+                "airTemperature1p5m,relativeHumidity1p5m,weatherCodePt01h,windSpeed10m,windFromDirection10mMean",
+                "50", lat, lng, now, now + 96 * 60 * 60, percentileResponse, false) ||
+            !parseBlendedPercentileDocument(percentileResponse, data, now,
+                                            &WeatherClient::metOfficeToWmoCode,
+                                            timeSelection)) {
+            data.valid = false;
+            return data;
+        }
+    }
+
+    DynamicJsonDocument probabilityResponse(16384);
+    if (!requestBlendedForecast(
+            "uk-spot-probabilities",
+            "probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01h",
+            "", lat, lng, now, now + 96 * 60 * 60, probabilityResponse, true) ||
+        !parseBlendedProbabilityDocument(probabilityResponse, data, now, timeSelection)) {
         data.valid = false;
         return data;
     }
 
-    String dailyPayload;
-    if (!requestMetOfficeForecast("daily", lat, lng, dailyPayload) ||
-        !parseMetOfficeDailyJson(dailyPayload.c_str(), data)) {
-        data.valid = false;
-        return data;
+    data.cityName = _cityName.length() > 0 ? _cityName : settings.getCityCode();
+    if (data.cityName.length() == 0) {
+        data.cityName = "Local";
     }
-
     _cityName = data.cityName;
-    Serial.printf("[Weather] Met Office success. Temp: %.1f, Hum: %d %%, Status: %s, Wind: %.1f, City: %s\n",
+    Serial.printf("[Weather] Met Office BPF success. Temp: %.1f, Hum: %d %%, Status: %s, Wind: %.1f, City: %s\n",
         data.temperature, data.humidity, data.status.c_str(), data.windSpeed, data.cityName.c_str());
     return data;
 #endif
@@ -562,9 +861,9 @@ int WeatherClient::metOfficeToWmoCode(int code) {
         case 10: return 80;
         case 11: return 51;
         case 12: return 61;
-        case 13:
-        case 14: return 82;
-        case 15: return 65;
+        case 13: return 65;
+        case 14:
+        case 15: return 82;
         case 16:
         case 17: return 85;
         case 18: return 67;
@@ -660,7 +959,7 @@ bool WeatherClient::parseMetOfficeHourlyJson(const char* json, WeatherData& data
         }
     }
     data.weatherCode = metOfficeToWmoCode(current["significantWeatherCode"].as<int>());
-    data.status = getWeatherDesc(data.weatherCode);
+    data.status = metOfficeWeatherDesc(current["significantWeatherCode"].as<int>());
     data.windSpeed = metOfficeWindSpeed(current["windSpeed10m"] | 0.0f);
     data.windDirection = current["windDirectionFrom10m"] | 0;
     data.valid = true;
@@ -739,7 +1038,7 @@ bool WeatherClient::parseMetOfficeDailyJson(const char* json, WeatherData& data,
         forecast.tempMax = metOfficeTemperature(day["dayMaxScreenTemperature"].as<float>());
         forecast.tempMin = metOfficeTemperature(day["nightMinScreenTemperature"].as<float>());
         forecast.weatherCode = code;
-        forecast.status = getWeatherDesc(code);
+        forecast.status = metOfficeWeatherDesc(day["daySignificantWeatherCode"].as<int>());
         if (slot == 0) {
             forecast.dayName = "Today";
         } else if (slot == 1) {
@@ -755,6 +1054,330 @@ bool WeatherClient::parseMetOfficeDailyJson(const char* json, WeatherData& data,
         return false;
     }
     return true;
+}
+
+bool WeatherClient::parseBlendedProbabilisticJson(const char* percentileJson,
+                                                   const char* probabilityJson,
+                                                   WeatherData& data, time_t ref_time) {
+    data.valid = false;
+    if (percentileJson == nullptr || probabilityJson == nullptr) {
+        Serial.println("[Weather] BPF response is missing.");
+        return false;
+    }
+
+    const char* percentileParameters[] = {
+        "airTemperature1p5m",
+        "relativeHumidity1p5m",
+        "weatherCodePt01h",
+        "windSpeed10m",
+        "windFromDirection10mMean"
+    };
+    const char* precipitationParameter =
+        "probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01h";
+
+    StaticJsonDocument<2048> percentileFilter;
+    JsonObject percentileCoverageFilter = percentileFilter["coverages"][0];
+    percentileCoverageFilter["id"] = true;
+    JsonObject percentileAxesFilter = percentileCoverageFilter["domain"]["axes"];
+    percentileAxesFilter["t"]["values"][0] = true;
+    percentileAxesFilter["percentiles"]["values"][0] = true;
+    percentileAxesFilter["percentile"]["values"][0] = true;
+    JsonObject percentileRangesFilter = percentileCoverageFilter["ranges"];
+    for (const char* parameter : percentileParameters) {
+        percentileRangesFilter[parameter]["axisNames"][0] = true;
+        percentileRangesFilter[parameter]["shape"][0] = true;
+        percentileRangesFilter[parameter]["values"][0] = true;
+    }
+    if (percentileFilter.overflowed()) {
+        Serial.println("[Weather] BPF percentile JSON filter overflow.");
+        return false;
+    }
+
+    StaticJsonDocument<1024> probabilityFilter;
+    JsonObject probabilityCoverageFilter = probabilityFilter["coverages"][0];
+    probabilityCoverageFilter["id"] = true;
+    probabilityCoverageFilter["domain"]["axes"]["t"]["values"][0] = true;
+    probabilityCoverageFilter["domain"]["axes"]["threshold"]["values"][0] = true;
+    probabilityCoverageFilter["domain"]["axes"]["thresholds"]["values"][0] = true;
+    probabilityCoverageFilter["ranges"][precipitationParameter]["axisNames"][0] = true;
+    probabilityCoverageFilter["ranges"][precipitationParameter]["shape"][0] = true;
+    probabilityCoverageFilter["ranges"][precipitationParameter]["values"][0] = true;
+    if (probabilityFilter.overflowed()) {
+        Serial.println("[Weather] BPF probability JSON filter overflow.");
+        return false;
+    }
+
+    DynamicJsonDocument percentileDoc(32768);
+    DynamicJsonDocument probabilityDoc(16384);
+    DeserializationError error = deserializeJson(
+        percentileDoc, percentileJson, DeserializationOption::Filter(percentileFilter));
+    if (error) {
+        Serial.print("[Weather] BPF percentile JSON error: ");
+        Serial.println(error.c_str());
+        return false;
+    }
+    error = deserializeJson(
+        probabilityDoc, probabilityJson, DeserializationOption::Filter(probabilityFilter));
+    if (error) {
+        size_t jsonLength = strlen(probabilityJson);
+        size_t lastNonWhitespace = jsonLength;
+        while (lastNonWhitespace > 0 &&
+               isspace(static_cast<unsigned char>(probabilityJson[lastNonWhitespace - 1]))) {
+            lastNonWhitespace--;
+        }
+        char finalChar = lastNonWhitespace > 0 ? probabilityJson[lastNonWhitespace - 1] : '\0';
+        Serial.printf("[Weather] BPF probability JSON error: %s (received %u bytes, final non-whitespace byte 0x%02X).\n",
+            error.c_str(), static_cast<unsigned int>(jsonLength),
+            static_cast<unsigned char>(finalChar));
+        return false;
+    }
+
+    return parseBlendedProbabilisticDocuments(
+        percentileDoc, probabilityDoc, data, ref_time, &WeatherClient::metOfficeToWmoCode);
+}
+
+namespace {
+
+bool parseBlendedPercentileDocument(JsonVariantConst percentileRoot,
+                                   WeatherData& data, time_t ref_time,
+                                   int (*toWmoCode)(int),
+                                   BpfTimeSelection& selection) {
+    data.valid = false;
+    const char* temperatureParameter = "airTemperature1p5m";
+    const char* humidityParameter = "relativeHumidity1p5m";
+    const char* weatherParameter = "weatherCodePt01h";
+    const char* windParameter = "windSpeed10m";
+    const char* directionParameter = "windFromDirection10mMean";
+    JsonArrayConst times;
+    if (!getBpfTimeValues(percentileRoot, temperatureParameter, times)) {
+        const char* responseType = percentileRoot["type"] | "(no type)";
+        JsonObjectConst root = percentileRoot.as<JsonObjectConst>();
+        Serial.printf("[Weather] BPF percentile parsed root type: %s; keys:",
+            responseType);
+        for (JsonPairConst member : root) {
+            Serial.printf(" %s", member.key().c_str());
+        }
+        Serial.println();
+        JsonArrayConst coverages = percentileRoot["coverages"].as<JsonArrayConst>();
+        Serial.printf("[Weather] BPF percentile diagnostic: %u coverages.\n",
+            static_cast<unsigned int>(coverages.size()));
+        for (JsonVariantConst coverage : coverages) {
+            const char* id = coverage["id"] | "(no id)";
+            JsonObjectConst axes = coverage["domain"]["axes"].as<JsonObjectConst>();
+            Serial.printf("[Weather] BPF percentile coverage %s axes:", id);
+            for (JsonPairConst axis : axes) {
+                Serial.printf(" %s", axis.key().c_str());
+            }
+            Serial.println();
+        }
+        Serial.println("[Weather] BPF percentile response is missing hourly time values.");
+        return false;
+    }
+
+    time_t now = ref_time == 0 ? time(nullptr) : ref_time;
+    if (now < 1577836800) {
+        Serial.println("[Weather] BPF response cannot be aligned before time synchronization.");
+        return false;
+    }
+    size_t currentIndex = 0;
+    time_t latestPastTime = 0;
+    for (size_t i = 0; i < times.size(); i++) {
+        const char* timestamp = times[i].as<const char*>();
+        time_t forecastTime = parseMetOfficeTime(timestamp);
+        if (timestamp == nullptr || forecastTime == 0) {
+            Serial.println("[Weather] BPF percentile response contains invalid timestamps.");
+            return false;
+        }
+        if (forecastTime <= now && forecastTime >= latestPastTime) {
+            latestPastTime = forecastTime;
+            currentIndex = i;
+        }
+    }
+    selection.currentIndex = currentIndex;
+    selection.timeCount = times.size();
+    const char* currentTimestamp = times[currentIndex].as<const char*>();
+    if (currentTimestamp == nullptr || strlen(currentTimestamp) >= sizeof(selection.currentTimestamp)) {
+        Serial.println("[Weather] BPF current forecast timestamp is invalid.");
+        return false;
+    }
+    strcpy(selection.currentTimestamp, currentTimestamp);
+
+    float currentTemperatureK;
+    float currentHumidity;
+    float currentWeatherCode;
+    float currentWindSpeed;
+    float currentWindDirection;
+    if (!readBpfCoverageValue(percentileRoot, temperatureParameter, currentIndex,
+                              "percentiles", "50", currentTemperatureK) ||
+        !readBpfCoverageValue(percentileRoot, humidityParameter, currentIndex,
+                              "percentiles", "50", currentHumidity) ||
+        !readBpfCoverageValue(percentileRoot, weatherParameter, currentIndex,
+                              "percentiles", "50", currentWeatherCode) ||
+        !readBpfCoverageValue(percentileRoot, windParameter, currentIndex,
+                              "percentiles", "50", currentWindSpeed) ||
+        !readBpfCoverageValue(percentileRoot, directionParameter, currentIndex,
+                              "percentiles", "50", currentWindDirection) ||
+        currentHumidity < 0.0f || currentHumidity > 100.0f) {
+        Serial.println("[Weather] BPF percentile response is missing required current conditions.");
+        return false;
+    }
+
+    int currentMetOfficeCode = static_cast<int>(currentWeatherCode + 0.5f);
+    data.temperature = metOfficeTemperature(currentTemperatureK - 273.15f);
+    data.humidity = static_cast<int>(currentHumidity + 0.5f);
+    data.weatherCode = toWmoCode(currentMetOfficeCode);
+    data.status = metOfficeWeatherDesc(currentMetOfficeCode);
+    data.windSpeed = metOfficeWindSpeed(currentWindSpeed);
+    data.windDirection = static_cast<int>(currentWindDirection + 0.5f);
+
+    for (int i = 0; i < 24; i++) {
+        size_t sourceIndex = currentIndex + static_cast<size_t>(i);
+        if (sourceIndex >= times.size()) {
+            data.hourly[i] = {0.0f, 0};
+            continue;
+        }
+
+        float temperatureK;
+        if (!readBpfCoverageValue(percentileRoot, temperatureParameter, sourceIndex,
+                                  "percentiles", "50", temperatureK)) {
+            Serial.println("[Weather] BPF percentile response is missing hourly temperature.");
+            return false;
+        }
+        data.hourly[i].temperature = metOfficeTemperature(temperatureK - 273.15f);
+        data.hourly[i].precipitationProbability = 0;
+    }
+
+    char today[11] = "";
+    char tomorrow[11] = "";
+    if (!getLocalDateStrings(today, sizeof(today), tomorrow, sizeof(tomorrow), now)) {
+        Serial.println("[Weather] Unable to determine local dates for the BPF forecast.");
+        return false;
+    }
+
+    bool populated[3] = {false, false, false};
+    for (size_t i = 0; i < times.size(); i++) {
+        time_t forecastTime = parseMetOfficeTime(times[i].as<const char*>());
+        char date[11] = "";
+        int slot = -1;
+        if (!getLocalDateStringFromTimestamp(forecastTime, date, sizeof(date))) {
+            continue;
+        }
+        if (strcmp(date, today) == 0) {
+            slot = 0;
+        } else if (strcmp(date, tomorrow) == 0) {
+            slot = 1;
+        } else if (strcmp(date, tomorrow) > 0) {
+            slot = 2;
+        }
+        if (slot < 0 || slot > 2) continue;
+
+        float temperatureK;
+        float weatherCode;
+        if (!readBpfCoverageValue(percentileRoot, temperatureParameter, i,
+                                  "percentiles", "50", temperatureK) ||
+            !readBpfCoverageValue(percentileRoot, weatherParameter, i,
+                                  "percentiles", "50", weatherCode)) {
+            continue;
+        }
+
+        ForecastDay& forecast = data.forecast[slot];
+        float temperature = metOfficeTemperature(temperatureK - 273.15f);
+        if (!populated[slot]) {
+            forecast.tempMin = temperature;
+            forecast.tempMax = temperature;
+            forecast.weatherCode = toWmoCode(static_cast<int>(weatherCode + 0.5f));
+            forecast.status = metOfficeWeatherDesc(static_cast<int>(weatherCode + 0.5f));
+            forecast.dayName = slot == 0 ? "Today" : slot == 1 ? "Tmrw" : shortDayName(date);
+            populated[slot] = true;
+        } else {
+            if (temperature < forecast.tempMin) forecast.tempMin = temperature;
+            if (temperature > forecast.tempMax) forecast.tempMax = temperature;
+        }
+    }
+
+    if (!populated[0] || !populated[1] || !populated[2]) {
+        Serial.println("[Weather] BPF response does not cover the next three local days.");
+        return false;
+    }
+
+    data.valid = true;
+    return true;
+}
+
+bool parseBlendedProbabilityDocument(JsonVariantConst probabilityRoot,
+                                     WeatherData& data, time_t ref_time,
+                                     const BpfTimeSelection& selection) {
+    const char* precipitationParameter =
+        "probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01h";
+    JsonArrayConst times;
+    if (!getBpfTimeValues(probabilityRoot, precipitationParameter, times) ||
+        times.size() != selection.timeCount ||
+        selection.currentIndex >= times.size()) {
+        Serial.println("[Weather] BPF probability response has incompatible hourly time values.");
+        return false;
+    }
+
+    const char* currentTimestamp = times[selection.currentIndex].as<const char*>();
+    if (currentTimestamp == nullptr ||
+        strcmp(currentTimestamp, selection.currentTimestamp) != 0) {
+        Serial.println("[Weather] BPF probability response timestamps do not match the percentile response.");
+        return false;
+    }
+
+    time_t now = ref_time == 0 ? time(nullptr) : ref_time;
+    if (now < 1577836800) {
+        Serial.println("[Weather] BPF response cannot be aligned before time synchronization.");
+        return false;
+    }
+    for (int i = 0; i < 24; i++) {
+        size_t sourceIndex = selection.currentIndex + static_cast<size_t>(i);
+        if (sourceIndex >= times.size()) {
+            data.hourly[i].precipitationProbability = 0;
+            continue;
+        }
+        float probability;
+        if (!readBpfCoverageValue(probabilityRoot, precipitationParameter, sourceIndex,
+                                  nullptr, nullptr, probability) ||
+            probability < 0.0f || probability > 100.0f) {
+            Serial.println("[Weather] BPF response is missing hourly precipitation probability.");
+            return false;
+        }
+        data.hourly[i].precipitationProbability = static_cast<int>(
+            probability <= 1.0f ? probability * 100.0f + 0.5f : probability + 0.5f);
+    }
+    return true;
+}
+
+bool parseBlendedProbabilisticDocuments(JsonVariantConst percentileRoot,
+                                        JsonVariantConst probabilityRoot,
+                                        WeatherData& data, time_t ref_time,
+                                        int (*toWmoCode)(int)) {
+    const char* temperatureParameter = "airTemperature1p5m";
+    const char* precipitationParameter =
+        "probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01h";
+    JsonArrayConst percentileTimes;
+    JsonArrayConst probabilityTimes;
+    if (!getBpfTimeValues(percentileRoot, temperatureParameter, percentileTimes) ||
+        !getBpfTimeValues(probabilityRoot, precipitationParameter, probabilityTimes) ||
+        percentileTimes.size() != probabilityTimes.size()) {
+        Serial.println("[Weather] BPF response is missing compatible hourly time axes.");
+        return false;
+    }
+    for (size_t i = 0; i < percentileTimes.size(); i++) {
+        const char* percentileTimestamp = percentileTimes[i].as<const char*>();
+        const char* probabilityTimestamp = probabilityTimes[i].as<const char*>();
+        if (percentileTimestamp == nullptr || probabilityTimestamp == nullptr ||
+            strcmp(percentileTimestamp, probabilityTimestamp) != 0) {
+            Serial.println("[Weather] BPF response contains mismatched timestamps.");
+            return false;
+        }
+    }
+
+    BpfTimeSelection selection = {};
+    return parseBlendedPercentileDocument(percentileRoot, data, ref_time,
+                                          toWmoCode, selection) &&
+           parseBlendedProbabilityDocument(probabilityRoot, data, ref_time, selection);
+}
 }
 
 bool WeatherClient::parseOwmJson(const char* json, WeatherData& data, time_t ref_time) {
