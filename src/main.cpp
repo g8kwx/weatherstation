@@ -16,8 +16,8 @@
 #include "screensaver_manager.h"
 #include "button_manager.h"
 #include <DHT.h>
-#include <Adafruit_SHT4x.h>
 #include <Wire.h>
+#include <Adafruit_SHT4x.h>
 #include "time_utils.h"
 
 
