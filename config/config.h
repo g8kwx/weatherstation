@@ -9,29 +9,29 @@
 
 // Coordinates (Fallback if USE_ZIP_CODE is false)
 // #define WEATHER_API_LATITUDE "34.10313"
-#define WEATHER_API_LATITUDE ""
-// #define WEATHER_API_LONGITUDE "-118.41625"
-#define WEATHER_API_LONGITUDE ""
+#define WEATHER_API_LATITUDE "51.184021"
+// #define WEATHER_API_LONGITUDE ""
+#define WEATHER_API_LONGITUDE "-0.529317"
 
 // City Code (For OpenWeatherMap only)
 // #define WEATHER_CITY_CODE "2643743" // London
-#define WEATHER_CITY_CODE ""
+#define WEATHER_CITY_CODE "Shamley Green"
 
 // Open-Meteo API Settings
-#define WEATHER_UPDATE_INTERVAL_MINS 1
+#define WEATHER_UPDATE_INTERVAL_MINS 5
 
 // NTP and Timezone Settings
 // Note: We use POSIX strings for efficiency to avoid bundling a giant tzdata lookup table.
 // Find your region's POSIX string here: https://gist.github.com/alwynallan/24d96091655391107939
 #define NTP_SERVER "pool.ntp.org"
-#define TIMEZONE_DEFAULT "UTC"       // IANA Timezone string (e.g. America/Los_Angeles)
-#define USE_24_HOUR_FORMAT false
+// #define TIMEZONE_DEFAULT "UTC"       // IANA Timezone string (e.g. America/Los_Angeles)
+#define USE_24_HOUR_FORMAT true
 // Some common timezone strings:
 // #define TIMEZONE_DEFAULT "America/New_York"
 // #define TIMEZONE_DEFAULT "America/Chicago"
 // #define TIMEZONE_DEFAULT "America/Denver"
 // #define TIMEZONE_DEFAULT "America/Los_Angeles"
-// #define TIMEZONE_DEFAULT "Europe/London"
+#define TIMEZONE_DEFAULT "Europe/London"
 // #define TIMEZONE_DEFAULT "Europe/Berlin"
 
 
@@ -51,17 +51,17 @@ extern int getCurrentThemeFlavor();
 
 // Choose Unit System (UNIT_METRIC or UNIT_IMPERIAL)
 // #define UNIT_SYSTEM UNIT_METRIC
-#define UNIT_SYSTEM UNIT_IMPERIAL
+#define UNIT_SYSTEM UNIT_METRIC
 
 // Header Title and Version Display Settings
-#define SHOW_TITLE_VERSION true
+#define SHOW_TITLE_VERSION false
 
 // Auto Backlight Settings
 #define USE_LDR_AUTO_BACKLIGHT false
 
 // Screensaver Settings
 #define SCREENSAVER_ENABLED false
-#define SCREENSAVER_TIMEOUT_MS 300000 // 5 minutes (in milliseconds)
+#define SCREENSAVER_TIMEOUT_MS 300000 //  minutes (in milliseconds)
 
 // RGB LED Status Settings
 #define USE_RGB_LED_STATUS true

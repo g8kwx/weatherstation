@@ -777,7 +777,7 @@ void initUI() {
 
     wind_label = lv_label_create(wind_cnt);
     lv_obj_set_style_text_font(wind_label, isLargeScreen ? &lv_font_montserrat_20 : &lv_font_montserrat_14, LV_PART_MAIN);
-    lv_label_set_text(wind_label, "Wind: -- km/h");
+    lv_label_set_text(wind_label, "Wind: -- kn");
     lv_obj_set_style_text_color(wind_label, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).lavender), LV_PART_MAIN);
 
     // --- Status row (dynamic weather-code icon + description text) ---
@@ -1662,11 +1662,12 @@ void updateWeatherUI(float temperature, int humidity, const char* status, int we
 
     char wind_str[48];
     const char* cardinal = getCardinalDirection(windDirection);
+    float windSpeedKmh = windSpeed;
     if (settings.getUnitSystem() == UNIT_IMPERIAL) {
-        snprintf(wind_str, sizeof(wind_str), "%.1f mph %s", windSpeed, cardinal);
-    } else {
-        snprintf(wind_str, sizeof(wind_str), "%.1f km/h %s", windSpeed, cardinal);
+        windSpeedKmh *= 1.609344f;
     }
+    float knts = windSpeedKmh / 1.852f;
+    snprintf(wind_str, sizeof(wind_str), "%.1f kn %s", knts, cardinal);
     lv_label_set_text(wind_label, wind_str);
 
     lv_label_set_text(status_lbl, status);
@@ -2104,4 +2105,3 @@ void ui_sync_toggles() {
         }
     }
 }
-
