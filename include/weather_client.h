@@ -37,6 +37,8 @@ public:
     static String getWeatherDesc(int code);
     static bool parseWeatherJson(const char* json, WeatherData& data, time_t ref_time = 0);
     bool parseOwmJson(const char* json, WeatherData& data, time_t ref_time = 0);
+    static bool parseMetOfficeHourlyJson(const char* json, WeatherData& data, time_t ref_time = 0);
+    static bool parseMetOfficeDailyJson(const char* json, WeatherData& data, time_t ref_time = 0);
     static String serializeWeatherData(const WeatherData& data);
     static bool deserializeWeatherData(const String& json, WeatherData& data);
     bool isLocationEmpty();
@@ -45,8 +47,8 @@ public:
 
 private:
     bool geocodeZip();
-    bool reverseGeocode();
     static int owmToWmoCode(int owmCode);
+    static int metOfficeToWmoCode(int metOfficeCode);
 
     String _latitude;
     String _longitude;

@@ -423,20 +423,12 @@ void WifiManager::handleRoot() {
     html += "</div>";
     
     html += "<div class='section-title'>Weather Service</div>";
-    
-    html += "<label for='owm_api'>OpenWeatherMap API Key</label>";
-    html += "<div class='password-wrapper'>";
-    html += "<input type='password' id='owm_api' name='owm_api' placeholder='API Key' value='" + settings.getOwmApiKey() + "'>";
-    html += "<span class='toggle-password' onclick='togglePwd(\"owm_api\", this)'><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z\"></path><circle cx=\"12\" cy=\"12\" r=\"3\"></circle></svg></span>";
-    html += "</div>";
+    html += "<p>Weather data is provided by the UK Met Office. Configure the API key in config/secrets.h and rebuild the firmware.</p>";
     
     html += "<div class='section-title'>Location & Time</div>";
     
     html += "<label for='zip'>Zip Code (US Only)</label>";
     html += "<input type='text' id='zip' name='zip' placeholder='e.g. 90210' value='" + settings.getZipCode() + "'>";
-    
-    html += "<label for='city'>City ID (<a href='https://openweathermap.org/find' target='_blank' style='color: #89b4fa; text-decoration: none;'>OpenWeatherMap</a>)</label>";
-    html += "<input type='text' id='city' name='city' placeholder='e.g. 2643743' value='" + settings.getCityCode() + "'>";
     
     html += "<label for='lat'>Latitude</label>";
     html += "<input type='text' id='lat' name='lat' placeholder='e.g. 34.1031' value='" + settings.getLatitude() + "'>";
@@ -467,11 +459,9 @@ void WifiManager::handleSave() {
     String ssid = _webServer->arg("ssid");
     String pass = _webServer->arg("pass");
     String zip = _webServer->arg("zip");
-    String city = _webServer->arg("city");
     String lat = _webServer->arg("lat");
     String lon = _webServer->arg("lon");
     String tz = _webServer->arg("tz");
-    String owmApi = _webServer->arg("owm_api");
     String ntpServer = _webServer->arg("ntp_server");
 
     Serial.printf("[WiFi] Saved new credentials via captive portal: %s\n", ssid.c_str());
@@ -494,11 +484,9 @@ void WifiManager::handleSave() {
     settings.setWifiSSID(ssid);
     settings.setWifiPassword(pass);
     settings.setZipCode(zip);
-    settings.setCityCode(city);
     if (lat.length() > 0) settings.setLatitude(lat);
     if (lon.length() > 0) settings.setLongitude(lon);
     if (tz.length() > 0) settings.setTimezone(tz);
-    if (owmApi.length() > 0) settings.setOwmApiKey(owmApi);
     if (ntpServer.length() > 0) settings.setNtpServer(ntpServer);
 
     _webServer->send(200, "text/html", html);
@@ -913,9 +901,7 @@ void WifiManager::handleSettings() {
     html.replace("%SLEEP_END_TIME%", settings.getSleepEndTime());
     html.replace("%SCREENSAVER_TIMEOUT%", String(settings.getScreensaverTimeout() / 60000));
     
-    html.replace("%OWM_API%", settings.getOwmApiKey());
     html.replace("%ZIP%", settings.getZipCode());
-    html.replace("%CITY%", settings.getCityCode());
     html.replace("%LAT%", settings.getLatitude());
     html.replace("%LON%", settings.getLongitude());
     html.replace("%TZ%", settings.getTimezone());

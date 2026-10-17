@@ -17,8 +17,8 @@
 // #define WEATHER_CITY_CODE "2643743" // London
 #define WEATHER_CITY_CODE "Shamley Green"
 
-// Open-Meteo API Settings
-#define WEATHER_UPDATE_INTERVAL_MINS 5
+// UK Met Office Weather DataHub Settings
+#define WEATHER_UPDATE_INTERVAL_MINS 10
 
 // NTP and Timezone Settings
 // Note: We use POSIX strings for efficiency to avoid bundling a giant tzdata lookup table.

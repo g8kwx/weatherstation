@@ -4,21 +4,19 @@
 [![test](https://img.shields.io/github/actions/workflow/status/nicholaswilde/cyd-weather-station/test.yaml?label=test&style=for-the-badge&branch=main&logo=github-actions)](https://github.com/nicholaswilde/cyd-weather-station/actions/workflows/test.yaml)
 [![ci](https://img.shields.io/github/actions/workflow/status/nicholaswilde/cyd-weather-station/ci.yaml?label=ci&style=for-the-badge&logo=github-actions)](https://github.com/nicholaswilde/cyd-weather-station/actions/workflows/ci.yaml)
 
-A beautiful, configurable real-time weather station and desk clock built for the **ESP32 Cheap Yellow Device (CYD)** family (such as the 2.8" Resistive **ESP32-2432S028R**, 2.8" Capacitive **ESP32-2432W328C**, and 3.5" Capacitive **ESP32-3248S035C**) utilizing the **LVGL v8** graphics library, **Open-Meteo / OpenWeatherMap APIs**, and the **Catppuccin Color Theme**.
+A beautiful, configurable real-time weather station and desk clock built for the **ESP32 Cheap Yellow Device (CYD)** family (such as the 2.8" Resistive **ESP32-2432S028R**, 2.8" Capacitive **ESP32-2432W328C**, and 3.5" Capacitive **ESP32-3248S035C**) utilizing the **LVGL v8** graphics library, the **UK Met Office Weather DataHub API**, and the **Catppuccin Color Theme**.
 
 > [!WARNING]
 > This project is currently in a `v0.X.X` development stage. Features and configurations are subject to change, and breaking changes may be introduced at any time.
 
 ## :star: Features
 
-- **Dual API Integration**: 
-  - **Open-Meteo API**: Out-of-the-box fallback — no API key required. Automatically fetches 24-hour rolling hourly forecasts and 3-day daily forecasts in the user's local timezone.
-  - **OpenWeatherMap API**: Automatically used if an API key is configured.
+- **UK Met Office Weather DataHub**: Retrieves hourly conditions and a three-day daily forecast for the configured coordinates over verified HTTPS using the API key in `config/secrets.h`.
 - **Location Resolution & City Name Footer**:
   - Displays `Last Update: <time> | <city name>` centered at the bottom of the screen.
   - **Zip Code Geocoding**: Enter a US Zip Code (e.g. `90210`); coordinates are resolved on boot.
   - **IP Geolocation Fallback**: Automatically falls back to resolving location via IP geolocation (using `ip-api.com`) on boot if Zip Code and coordinates are left blank.
-  - **Reverse Geocoding**: When using coordinates + Open-Meteo, the city is resolved using Nominatim OSM. OWM resolves and returns the city name natively.
+  - **Location Name**: The Met Office response supplies the location name used in the weather footer.
 - **3-Day Forecast View**: Swipe to a dedicated Forecast tab showing daily high/low temperature and weather condition icons.
 - **24-Hour Hourly Forecast Chart**: Dedicated Hourly tab plotting dynamic temperature and precipitation probability curves across a 24-hour rolling window with 4-hour interval tick labels (`Now`, `+4h`, `+8h`, `+12h`, `+16h`, `+20h`, `+24h`).
 - **Swipe Navigation**: Swipe left/right anywhere on the screen to switch between the Current Weather, 3-Day Forecast, 24-Hour Hourly Forecast, and System Settings tabs.
@@ -410,9 +408,8 @@ Wi-Fi credentials and API keys live in a Git-ignored secrets file to prevent com
    // This can also be changed at runtime via the Web Settings UI.
    #define AP_PASSWORD ""
 
-   // (Optional) Set your API key here to use OpenWeatherMap instead of Open-Meteo.
-   // If left empty (""), Open-Meteo API will be used as a fallback.
-   #define OPENWEATHERMAP_API_KEY "YOUR_OPENWEATHERMAP_API_KEY"
+   // Required for weather forecasts from the UK Met Office DataHub.
+   #define METOFFICE_API_KEY "YOUR_MET_OFFICE_API_KEY"
    ```
 
 #### Configuration
@@ -420,14 +417,14 @@ Wi-Fi credentials and API keys live in a Git-ignored secrets file to prevent com
 Static settings (location, update interval) live in [`config/config.h`](config/config.h). Runtime user preferences (units, brightness, theme, timezone) are changed via the on-device **Settings tab** and saved to flash.
 
 **Location:**
-Location (Zip Code, City Code, or Coordinates) is configured dynamically via the **Captive Portal Wi-Fi Manager** when the device boots in AP mode. You can pre-configure the fallback defaults in `config/config.h`:
+Location (US ZIP code or coordinates) is configured dynamically via the **Captive Portal Wi-Fi Manager** when the device boots in AP mode. The Met Office forecast uses coordinates; the legacy city-code setting is ignored. You can pre-configure the fallback defaults in `config/config.h`:
 ```cpp
 // Default values (if not configured via Wi-Fi Setup)
 #define WEATHER_ZIP_CODE  "90210"
 #define WEATHER_API_LATITUDE  ""
 #define WEATHER_API_LONGITUDE ""
 
-// City Code (For OpenWeatherMap only)
+// Legacy City Code (not used by the Met Office API)
 #define WEATHER_CITY_CODE ""
 ```
 *(Note: If you leave these fields empty in both the code and the Wi-Fi Setup page, the device will automatically detect your location via IP Geolocation).*
@@ -435,7 +432,7 @@ Location (Zip Code, City Code, or Coordinates) is configured dynamically via the
 **Weather update interval:**
 You can change the update interval dynamically via the Web Settings UI, or set the default fallback here:
 ```cpp
-#define WEATHER_UPDATE_INTERVAL_MINS 15
+#define WEATHER_UPDATE_INTERVAL_MINS 10
 ```
 
 **Screensaver:**

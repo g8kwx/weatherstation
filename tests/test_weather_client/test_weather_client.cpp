@@ -109,6 +109,67 @@ void test_weather_client_parse_weather_json_custom(void) {
     TEST_ASSERT_EQUAL_STRING("Thunderstorm", data.forecast[2].status.c_str());
 }
 
+void test_weather_client_parse_metoffice_hourly_json(void) {
+    settings.setUnitSystem(UNIT_METRIC);
+    WeatherData data = {};
+    const char* hourlyJson = "{"
+        "\"features\":[{\"properties\":{"
+            "\"location\":{\"name\":\"Shamley Green\"},"
+            "\"timeSeries\":["
+                "{\"time\":\"2026-10-17T12:00Z\",\"screenTemperature\":15.5,\"screenRelativeHumidity\":80,\"windSpeed10m\":4.0,\"windDirectionFrom10m\":180,\"significantWeatherCode\":3,\"probOfPrecipitation\":10},"
+                "{\"time\":\"2026-10-17T13:00Z\",\"screenTemperature\":16.5,\"screenRelativeHumidity\":75,\"windSpeed10m\":5.0,\"windDirectionFrom10m\":190,\"significantWeatherCode\":1,\"probOfPrecipitation\":20}"
+            "]"
+        "}}]}";
+    time_t now = parseUtcDtTxt("2026-10-17 12:30:00");
+
+    TEST_ASSERT_TRUE(WeatherClient::parseMetOfficeHourlyJson(hourlyJson, data, now));
+    TEST_ASSERT_TRUE(data.valid);
+    TEST_ASSERT_EQUAL_STRING("Shamley Green", data.cityName.c_str());
+    TEST_ASSERT_EQUAL_FLOAT(15.5f, data.temperature);
+    TEST_ASSERT_EQUAL(80, data.humidity);
+    TEST_ASSERT_EQUAL(2, data.weatherCode);
+    TEST_ASSERT_EQUAL_STRING("Partly cloudy", data.status.c_str());
+    TEST_ASSERT_EQUAL_FLOAT(14.4f, data.windSpeed);
+    TEST_ASSERT_EQUAL(180, data.windDirection);
+    TEST_ASSERT_EQUAL_FLOAT(15.5f, data.hourly[0].temperature);
+    TEST_ASSERT_EQUAL(10, data.hourly[0].precipitationProbability);
+    TEST_ASSERT_EQUAL_FLOAT(16.5f, data.hourly[1].temperature);
+    TEST_ASSERT_EQUAL(20, data.hourly[1].precipitationProbability);
+
+    settings.setUnitSystem(UNIT_IMPERIAL);
+    WeatherData imperialData = {};
+    TEST_ASSERT_TRUE(WeatherClient::parseMetOfficeHourlyJson(hourlyJson, imperialData, now));
+    TEST_ASSERT_EQUAL_FLOAT(59.9f, imperialData.temperature);
+    TEST_ASSERT_EQUAL_FLOAT(8.947745f, imperialData.windSpeed);
+    TEST_ASSERT_EQUAL_FLOAT(61.7f, imperialData.hourly[1].temperature);
+    settings.setUnitSystem(UNIT_METRIC);
+}
+
+void test_weather_client_parse_metoffice_daily_json(void) {
+    settings.setUnitSystem(UNIT_METRIC);
+    String originalTimezone = settings.getTimezone();
+    settings.setTimezone("UTC0");
+    WeatherData data = {};
+    const char* dailyJson = "{"
+        "\"features\":[{\"properties\":{\"timeSeries\":["
+            "{\"time\":\"2026-10-17T00:00Z\",\"dayMaxScreenTemperature\":18.0,\"nightMinScreenTemperature\":11.0,\"daySignificantWeatherCode\":1},"
+            "{\"time\":\"2026-10-18T00:00Z\",\"dayMaxScreenTemperature\":17.0,\"nightMinScreenTemperature\":10.0,\"daySignificantWeatherCode\":7},"
+            "{\"time\":\"2026-10-19T00:00Z\",\"dayMaxScreenTemperature\":16.0,\"nightMinScreenTemperature\":9.0,\"daySignificantWeatherCode\":12}"
+        "]}}]}";
+    time_t now = parseUtcDtTxt("2026-10-17 12:30:00");
+
+    TEST_ASSERT_TRUE(WeatherClient::parseMetOfficeDailyJson(dailyJson, data, now));
+    TEST_ASSERT_EQUAL_STRING("Today", data.forecast[0].dayName.c_str());
+    TEST_ASSERT_EQUAL_FLOAT(18.0f, data.forecast[0].tempMax);
+    TEST_ASSERT_EQUAL_FLOAT(11.0f, data.forecast[0].tempMin);
+    TEST_ASSERT_EQUAL_STRING("Clear sky", data.forecast[0].status.c_str());
+    TEST_ASSERT_EQUAL_STRING("Tmrw", data.forecast[1].dayName.c_str());
+    TEST_ASSERT_EQUAL_STRING("Overcast", data.forecast[1].status.c_str());
+    TEST_ASSERT_EQUAL_STRING("Mon", data.forecast[2].dayName.c_str());
+    TEST_ASSERT_EQUAL_STRING("Slight rain", data.forecast[2].status.c_str());
+    settings.setTimezone(originalTimezone);
+}
+
 void test_weather_client_parse_owm_json(void) {
     settings.setZipCode(""); settings.setLatitude("33.60002"); settings.setLongitude("-117.67200"); WeatherClient client;
     WeatherData data = { 0.0f, 0, "Unknown", false, -1, 0.0f, 0, "", {} };
@@ -692,6 +753,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_weather_client_fetch_weather_native_mock);
     RUN_TEST(test_weather_client_zip_code_initialization);
     RUN_TEST(test_weather_client_parse_weather_json_custom);
+    RUN_TEST(test_weather_client_parse_metoffice_hourly_json);
+    RUN_TEST(test_weather_client_parse_metoffice_daily_json);
     RUN_TEST(test_weather_client_parse_owm_json);
     RUN_TEST(test_weather_client_parse_ip_location_json);
     RUN_TEST(test_weather_client_parse_ip_location_json_fail);

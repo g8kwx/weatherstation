@@ -5,8 +5,8 @@
 #include "settings_manager.h"
 #include <time.h>
 
-#ifndef OPENWEATHERMAP_API_KEY
-#define OPENWEATHERMAP_API_KEY ""
+#ifndef METOFFICE_API_KEY
+#define METOFFICE_API_KEY ""
 #endif
 
 extern SettingsManager settings;
@@ -15,7 +15,122 @@ extern SettingsManager settings;
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 #endif
+
+namespace {
+
+const char* const METOFFICE_ROOT_CA =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF\n"
+    "ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6\n"
+    "b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL\n"
+    "MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv\n"
+    "b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj\n"
+    "ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM\n"
+    "9O6II8c+6zf1tRn4SWiw3te5djgdYZ6k/oI2peVKVuRF4fn9tBb6dNqcmzU5L/qw\n"
+    "IFAGbHrQgLKm+a/sRxmPUDgH3KKHOVj4utWp+UhnMJbulHheb4mjUcAwhmahRWa6\n"
+    "VOujw5H5SNz/0egwLX0tdHA114gk957EWW67c4cX8jJGKLhD+rcdqsq08p8kDi1L\n"
+    "93FcXmn/6pUCyziKrlA4b9v7LWIbxcceVOF34GfID5yHI9Y/QCB/IIDEgEw+OyQm\n"
+    "jgSubJrIqg0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC\n"
+    "AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA\n"
+    "A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK5IpDB/G/wkjUu0yKGX9rbxenDI\n"
+    "U5PMCCjjmCXPI6T53iHTfIUJrU6adTrCC2qJeHZERxhlbI1Bjjt/msv0tadQ1wUs\n"
+    "N+gDS63pYaACbvXy8MWy7Vu33PqUXHeeE6V/Uq2V8viTO96LXFvKWlJbYK8U90vv\n"
+    "o/ufQJVtMVT8QtPHRh8jrdkPSHCa2XV4cdFyQzR1bldZwgJcJmApzyMZFo6IQ6XU\n"
+    "5MsI+yMRQ+hDKXJioaldXgjUkK642M4UwtBV8ob2xJNDd2ZhwLnoQdeXeGADbkpy\n"
+    "rqXRfboQnoZsG4q5WTP468SQvvG5\n"
+    "-----END CERTIFICATE-----\n";
+
+time_t parseMetOfficeTime(const char* value) {
+    if (!value || strlen(value) < 16 ||
+        value[4] != '-' || value[7] != '-' ||
+        (value[10] != 'T' && value[10] != ' ' ) ||
+        value[13] != ':') {
+        return 0;
+    }
+
+    char utcTime[20];
+    snprintf(utcTime, sizeof(utcTime), "%.10s %.5s:00", value, value + 11);
+    return parseUtcDtTxt(utcTime);
+}
+
+float metOfficeTemperature(float celsius) {
+    return settings.getUnitSystem() == UNIT_IMPERIAL
+        ? celsius * 1.8f + 32.0f
+        : celsius;
+}
+
+float metOfficeWindSpeed(float metresPerSecond) {
+    return metresPerSecond * (settings.getUnitSystem() == UNIT_IMPERIAL
+        ? 2.2369363f
+        : 3.6f);
+}
+
+String shortDayName(const char* date) {
+    int year = (date[0] - '0') * 1000 + (date[1] - '0') * 100 +
+               (date[2] - '0') * 10 + (date[3] - '0');
+    int month = (date[5] - '0') * 10 + (date[6] - '0');
+    int day = (date[8] - '0') * 10 + (date[9] - '0');
+    static const char* days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    static const int offsets[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+    if (month < 1 || month > 12) {
+        return date;
+    }
+    if (month < 3) year--;
+    int index = (year + year / 4 - year / 100 + year / 400 +
+                 offsets[month - 1] + day) % 7;
+    return days[index];
+}
+
+#ifndef NATIVE_TEST
+bool requestMetOfficeForecast(const char* frequency, const char* latitude,
+                              const char* longitude, String& payload) {
+    if (strlen(METOFFICE_API_KEY) == 0) {
+        Serial.println("[Weather] Met Office API key is not configured.");
+        return false;
+    }
+    for (int attempt = 0; attempt < 10 && time(nullptr) < 1577836800; attempt++) {
+        delay(500);
+    }
+    if (time(nullptr) < 1577836800) {
+        Serial.println("[Weather] System clock is not synchronized for HTTPS validation.");
+        return false;
+    }
+
+    String url = "https://data.hub.api.metoffice.gov.uk/sitespecific/v0/point/";
+    url += frequency;
+    url += "?latitude=";
+    url += latitude;
+    url += "&longitude=";
+    url += longitude;
+    url += "&excludeParameterMetadata=true&includeLocationName=true";
+
+    WiFiClientSecure client;
+    client.setCACert(METOFFICE_ROOT_CA);
+    HTTPClient http;
+    http.setTimeout(20000);
+    if (!http.begin(client, url)) {
+        Serial.printf("[Weather] Unable to connect to Met Office %s forecast.\n", frequency);
+        return false;
+    }
+
+    http.addHeader("Accept", "application/json");
+    http.addHeader("apikey", METOFFICE_API_KEY);
+    int httpCode = http.GET();
+    bool success = false;
+    if (httpCode == HTTP_CODE_OK) {
+        payload = http.getString();
+        success = true;
+    } else {
+        Serial.printf("[Weather] Met Office %s forecast failed: HTTP %d\n", frequency, httpCode);
+    }
+    http.end();
+    return success;
+}
+#endif
+
+} // namespace
 
 WeatherClient::WeatherClient()
     : _useZip(false), _zipResolved(false), _cityName("") {}
@@ -76,64 +191,6 @@ bool WeatherClient::geocodeZip() {
 #endif
 }
 
-bool WeatherClient::reverseGeocode() {
-#ifdef NATIVE_TEST
-    _cityName = "Mock City";
-    return true;
-#else
-    if (WiFi.status() != WL_CONNECTED) return false;
-
-    WiFiClient client;
-    HTTPClient http;
-
-    // Nominatim reverse geocoding — free, no API key required.
-    // Policy: include a descriptive User-Agent (required by Nominatim ToS).
-    String url = "http://nominatim.openstreetmap.org/reverse?format=json&lat=";
-    url += _latitude;
-    url += "&lon=";
-    url += _longitude;
-    url += "&zoom=10&addressdetails=1";
-
-    Serial.print("[Weather] Reverse geocoding coordinates: ");
-    Serial.print(_latitude); Serial.print(", "); Serial.println(_longitude);
-
-    if (http.begin(client, url)) {
-        http.addHeader("User-Agent", "CYD-Weather-Station/1.0");
-        int httpCode = http.GET();
-        if (httpCode == HTTP_CODE_OK) {
-            String payload = http.getString();
-            StaticJsonDocument<2048> doc;
-            DeserializationError error = deserializeJson(doc, payload);
-            if (!error) {
-                // Prefer city > town > village > county in that order
-                const char* city = nullptr;
-                if (!city && doc["address"]["city"].is<const char*>())
-                    city = doc["address"]["city"];
-                if (!city && doc["address"]["town"].is<const char*>())
-                    city = doc["address"]["town"];
-                if (!city && doc["address"]["village"].is<const char*>())
-                    city = doc["address"]["village"];
-                if (!city && doc["address"]["county"].is<const char*>())
-                    city = doc["address"]["county"];
-                if (city) {
-                    _cityName = String(city);
-                    Serial.printf("[Weather] Reverse geocode: %s\n", _cityName.c_str());
-                    http.end();
-                    return true;
-                }
-            } else {
-                Serial.print("[Weather] Reverse geocode JSON error: ");
-                Serial.println(error.c_str());
-            }
-        } else {
-            Serial.printf("[Weather] Reverse geocode HTTP failed: %d\n", httpCode);
-        }
-        http.end();
-    }
-    return false;
-#endif
-}
-
 WeatherData WeatherClient::fetchWeather() {
 
     _zipCode = settings.getZipCode();
@@ -142,19 +199,12 @@ WeatherData WeatherClient::fetchWeather() {
     _useZip = (_zipCode.length() > 0 && _zipCode != "YOUR_ZIP_CODE");
     WeatherData data = { 0.0f, 0, "Unknown", false, -1, 0.0f, 0, "", {} };
 
-    bool useOWM = (settings.getOwmApiKey().length() > 0);
-
     // Resolve zip code if using zip code and not yet resolved
     if (_useZip && !_zipResolved) {
         if (!geocodeZip()) {
             Serial.println("[Weather] Failed to resolve zip code. Cannot fetch weather.");
             return data;
         }
-    }
-
-    // Resolve city name from coordinates (once) if not using zip and not using OWM (OWM gets it directly)
-    if (!_useZip && _cityName.length() == 0 && !useOWM) {
-        reverseGeocode();
     }
 
     const char* lat = _useZip ? _resolvedLat.c_str() : ((_latitude.length() > 0) ? _latitude.c_str() : _resolvedLat.c_str());
@@ -186,67 +236,23 @@ WeatherData WeatherClient::fetchWeather() {
         return data;
     }
 
-    WiFiClient client;
-    HTTPClient http;
-
-    String url;
-    if (useOWM) {
-        String cityCode = settings.getCityCode();
-        if (cityCode.length() > 0) {
-            url = "http://api.openweathermap.org/data/2.5/forecast?id=";
-            url += cityCode;
-        } else {
-            url = "http://api.openweathermap.org/data/2.5/forecast?lat=";
-            url += lat;
-            url += "&lon=";
-            url += lng;
-        }
-        url += "&appid=";
-        url += settings.getOwmApiKey();
-        url += "&units=";
-        url += (settings.getUnitSystem() == UNIT_IMPERIAL ? "imperial" : "metric");
-    } else {
-        url = "http://api.open-meteo.com/v1/forecast?latitude=";
-        url += lat;
-        url += "&longitude=";
-        url += lng;
-        url += "&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m";
-        url += "&daily=weather_code,temperature_2m_max,temperature_2m_min&forecast_days=3";
-        url += "&hourly=temperature_2m,precipitation_probability";
-        url += "&forecast_hours=24";
-        url += "&timezone=auto"; // Return dates in local timezone, not UTC
-        if (settings.getUnitSystem() == UNIT_IMPERIAL) {
-            url += "&temperature_unit=fahrenheit";
-            url += "&windspeed_unit=mph";
-        }
+    String hourlyPayload;
+    if (!requestMetOfficeForecast("hourly", lat, lng, hourlyPayload) ||
+        !parseMetOfficeHourlyJson(hourlyPayload.c_str(), data)) {
+        data.valid = false;
+        return data;
     }
 
-    Serial.print("[Weather] Fetching URL: ");
-    Serial.println(url);
-
-    if (http.begin(client, url)) {
-        int httpCode = http.GET();
-        if (httpCode == HTTP_CODE_OK) {
-            String payload = http.getString();
-            bool parseSuccess = false;
-            if (useOWM) {
-                parseSuccess = parseOwmJson(payload.c_str(), data);
-            } else {
-                parseSuccess = parseWeatherJson(payload.c_str(), data);
-            }
-            if (parseSuccess) {
-                data.cityName = _cityName;
-                Serial.printf("[Weather] Success! Temp: %.1f, Hum: %d %%, Status: %s, Wind: %.1f, City: %s\n",
-                    data.temperature, data.humidity, data.status.c_str(), data.windSpeed, data.cityName.c_str());
-            }
-        } else {
-            Serial.printf("[Weather] HTTP GET failed, error code: %d\n", httpCode);
-        }
-        http.end();
-    } else {
-        Serial.println("[Weather] Unable to connect to Weather API");
+    String dailyPayload;
+    if (!requestMetOfficeForecast("daily", lat, lng, dailyPayload) ||
+        !parseMetOfficeDailyJson(dailyPayload.c_str(), data)) {
+        data.valid = false;
+        return data;
     }
 
+    _cityName = data.cityName;
+    Serial.printf("[Weather] Met Office success. Temp: %.1f, Hum: %d %%, Status: %s, Wind: %.1f, City: %s\n",
+        data.temperature, data.humidity, data.status.c_str(), data.windSpeed, data.cityName.c_str());
     return data;
 #endif
 }
@@ -357,20 +363,7 @@ bool WeatherClient::parseWeatherJson(const char* json, WeatherData& data, time_t
                 } else if (i == 1) {
                     data.forecast[i].dayName = "Tmrw";
                 } else if (dateStr.length() >= 10) {
-                    // Compute short day name from the date string
-                    const char* dateCStr = dateStr.c_str();
-                    int y = (dateCStr[0]-'0')*1000 + (dateCStr[1]-'0')*100
-                          + (dateCStr[2]-'0')*10  + (dateCStr[3]-'0');
-                    int m = (dateCStr[5]-'0')*10 + (dateCStr[6]-'0');
-                    int d = (dateCStr[8]-'0')*10 + (dateCStr[9]-'0');
-
-                    // Tomohiko Sakamoto's algorithm (0=Sun … 6=Sat)
-                    static const char* days[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
-                    static const int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
-                    if (m < 3) y -= 1;
-                    int dayIdx = (y + y/4 - y/100 + y/400 + t[m-1] + d) % 7;
-                    data.forecast[i].dayName = (dayIdx >= 0 && dayIdx < 7)
-                                               ? days[dayIdx] : dateStr.c_str();
+                    data.forecast[i].dayName = shortDayName(dateStr.c_str());
                 } else {
                     data.forecast[i].dayName = dateStr;
                 }
@@ -419,6 +412,195 @@ String WeatherClient::getWeatherDesc(int code) {
         case 99: return "Thunderstorm with heavy hail";
         default: return "Unknown";
     }
+}
+
+int WeatherClient::metOfficeToWmoCode(int code) {
+    switch (code) {
+        case 0:
+        case 1: return 0;
+        case 2:
+        case 3: return 2;
+        case 5:
+        case 6: return 45;
+        case 7:
+        case 8: return 3;
+        case 9:
+        case 10: return 80;
+        case 11: return 51;
+        case 12: return 61;
+        case 13:
+        case 14: return 82;
+        case 15: return 65;
+        case 16:
+        case 17: return 85;
+        case 18: return 67;
+        case 19:
+        case 20:
+        case 21: return 96;
+        case 22:
+        case 23: return 85;
+        case 24: return 71;
+        case 25:
+        case 26: return 86;
+        case 27: return 75;
+        case 28:
+        case 29:
+        case 30: return 95;
+        default: return -1;
+    }
+}
+
+bool WeatherClient::parseMetOfficeHourlyJson(const char* json, WeatherData& data, time_t ref_time) {
+    StaticJsonDocument<1024> filter;
+    filter["features"][0]["properties"]["location"]["name"] = true;
+    filter["features"][0]["properties"]["timeSeries"][0]["time"] = true;
+    filter["features"][0]["properties"]["timeSeries"][0]["screenTemperature"] = true;
+    filter["features"][0]["properties"]["timeSeries"][0]["screenRelativeHumidity"] = true;
+    filter["features"][0]["properties"]["timeSeries"][0]["windSpeed10m"] = true;
+    filter["features"][0]["properties"]["timeSeries"][0]["windDirectionFrom10m"] = true;
+    filter["features"][0]["properties"]["timeSeries"][0]["significantWeatherCode"] = true;
+    filter["features"][0]["properties"]["timeSeries"][0]["probOfPrecipitation"] = true;
+
+    if (filter.overflowed()) {
+        Serial.println("[Weather] Met Office hourly JSON filter overflow.");
+        return false;
+    }
+
+    DynamicJsonDocument doc(16384);
+    DeserializationError error = deserializeJson(doc, json, DeserializationOption::Filter(filter));
+    if (error) {
+        Serial.print("[Weather] Met Office hourly JSON error: ");
+        Serial.println(error.c_str());
+        return false;
+    }
+
+    JsonArray timeSeries = doc["features"][0]["properties"]["timeSeries"].as<JsonArray>();
+    if (timeSeries.isNull() || timeSeries.size() == 0) {
+        Serial.println("[Weather] Met Office hourly response has no time series.");
+        return false;
+    }
+
+    JsonObject properties = doc["features"][0]["properties"];
+    if (properties["location"]["name"].is<const char*>()) {
+        data.cityName = properties["location"]["name"].as<String>();
+    }
+
+    time_t now = (ref_time == 0) ? time(nullptr) : ref_time;
+    int currentIndex = 0;
+    time_t latestPastTime = 0;
+    for (size_t i = 0; i < timeSeries.size(); i++) {
+        time_t forecastTime = parseMetOfficeTime(timeSeries[i]["time"] | "");
+        if (forecastTime > latestPastTime && forecastTime <= now) {
+            latestPastTime = forecastTime;
+            currentIndex = static_cast<int>(i);
+        }
+    }
+
+    JsonObject current = timeSeries[currentIndex];
+    if (!current.containsKey("screenTemperature") ||
+        !current.containsKey("significantWeatherCode")) {
+        Serial.println("[Weather] Met Office hourly response is missing current conditions.");
+        return false;
+    }
+
+    data.temperature = metOfficeTemperature(current["screenTemperature"].as<float>());
+    data.humidity = current["screenRelativeHumidity"] | 0;
+    data.weatherCode = metOfficeToWmoCode(current["significantWeatherCode"].as<int>());
+    data.status = getWeatherDesc(data.weatherCode);
+    data.windSpeed = metOfficeWindSpeed(current["windSpeed10m"] | 0.0f);
+    data.windDirection = current["windDirectionFrom10m"] | 0;
+    data.valid = true;
+
+    for (int i = 0; i < 24; i++) {
+        size_t sourceIndex = static_cast<size_t>(currentIndex + i);
+        if (sourceIndex >= timeSeries.size()) {
+            data.hourly[i] = {0.0f, 0};
+            continue;
+        }
+        JsonObject hour = timeSeries[sourceIndex];
+        data.hourly[i].temperature = metOfficeTemperature(hour["screenTemperature"] | 0.0f);
+        data.hourly[i].precipitationProbability = hour["probOfPrecipitation"] | 0;
+    }
+    return true;
+}
+
+bool WeatherClient::parseMetOfficeDailyJson(const char* json, WeatherData& data, time_t ref_time) {
+    StaticJsonDocument<512> filter;
+    filter["features"][0]["properties"]["timeSeries"][0]["time"] = true;
+    filter["features"][0]["properties"]["timeSeries"][0]["dayMaxScreenTemperature"] = true;
+    filter["features"][0]["properties"]["timeSeries"][0]["nightMinScreenTemperature"] = true;
+    filter["features"][0]["properties"]["timeSeries"][0]["daySignificantWeatherCode"] = true;
+
+    if (filter.overflowed()) {
+        Serial.println("[Weather] Met Office daily JSON filter overflow.");
+        return false;
+    }
+
+    DynamicJsonDocument doc(8192);
+    DeserializationError error = deserializeJson(doc, json, DeserializationOption::Filter(filter));
+    if (error) {
+        Serial.print("[Weather] Met Office daily JSON error: ");
+        Serial.println(error.c_str());
+        return false;
+    }
+
+    JsonArray timeSeries = doc["features"][0]["properties"]["timeSeries"].as<JsonArray>();
+    if (timeSeries.isNull() || timeSeries.size() == 0) {
+        Serial.println("[Weather] Met Office daily response has no time series.");
+        return false;
+    }
+
+    char today[11] = "";
+    char tomorrow[11] = "";
+    bool haveLocalDates = getLocalDateStrings(today, sizeof(today), tomorrow, sizeof(tomorrow), ref_time);
+    bool populated[3] = {false, false, false};
+    for (size_t i = 0; i < timeSeries.size(); i++) {
+        JsonObject day = timeSeries[i];
+        if (!day.containsKey("dayMaxScreenTemperature") ||
+            !day.containsKey("nightMinScreenTemperature") ||
+            !day.containsKey("daySignificantWeatherCode")) {
+            continue;
+        }
+
+        char date[11] = "";
+        int slot = -1;
+        time_t forecastTime = parseMetOfficeTime(day["time"] | "");
+        if (haveLocalDates && getLocalDateStringFromTimestamp(forecastTime, date, sizeof(date))) {
+            if (strcmp(date, today) == 0) {
+                slot = 0;
+            } else if (strcmp(date, tomorrow) == 0) {
+                slot = 1;
+            } else if (strcmp(date, tomorrow) > 0 && !populated[2]) {
+                slot = 2;
+            }
+        } else if (i < 3) {
+            slot = static_cast<int>(i);
+        }
+        if (slot < 0 || slot > 2 || populated[slot]) {
+            continue;
+        }
+
+        int code = metOfficeToWmoCode(day["daySignificantWeatherCode"].as<int>());
+        ForecastDay& forecast = data.forecast[slot];
+        forecast.tempMax = metOfficeTemperature(day["dayMaxScreenTemperature"].as<float>());
+        forecast.tempMin = metOfficeTemperature(day["nightMinScreenTemperature"].as<float>());
+        forecast.weatherCode = code;
+        forecast.status = getWeatherDesc(code);
+        if (slot == 0) {
+            forecast.dayName = "Today";
+        } else if (slot == 1) {
+            forecast.dayName = "Tmrw";
+        } else if (date[0] != '\0') {
+            forecast.dayName = shortDayName(date);
+        }
+        populated[slot] = true;
+    }
+
+    if (!populated[0] || !populated[1] || !populated[2]) {
+        Serial.println("[Weather] Met Office daily response does not cover the next three local days.");
+        return false;
+    }
+    return true;
 }
 
 bool WeatherClient::parseOwmJson(const char* json, WeatherData& data, time_t ref_time) {
@@ -832,4 +1014,3 @@ bool WeatherClient::parseIpLocationJson(const char* json, float& lat, float& lon
 
     return true;
 }
-
