@@ -137,6 +137,7 @@ static lv_obj_t *time_label;
 static lv_obj_t *icon_lbl;
 static lv_obj_t *tz_val_label;
 static lv_obj_t *footer_label;
+static lv_obj_t *hangar_temperature_label = nullptr;
 static lv_obj_t *local_sensor_cnt = nullptr;
 static lv_obj_t *local_sensor_lbl = nullptr;
 static lv_obj_t *tabview_obj = nullptr;
@@ -518,11 +519,9 @@ void initUI() {
 
     // Header Title (Time/App Name)
     header_title = lv_label_create(header);
-#ifdef APP_VERSION
-    lv_label_set_text(header_title, isLandscape ? "CYD Weather Station\n" APP_VERSION : "CYD Weather\nStation\n" APP_VERSION);
-#else
-    lv_label_set_text(header_title, isLandscape ? "CYD Weather Station" : "CYD Weather\nStation");
-#endif
+    lv_label_set_text(header_title, isLandscape
+        ? "Pooh Corner Weather Station"
+        : "Pooh Corner\nWeather Station");
     lv_obj_set_style_text_color(header_title, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).text), LV_PART_MAIN);
     lv_obj_align(header_title, LV_ALIGN_LEFT_MID, 10, 0);
     lv_label_set_long_mode(header_title, LV_LABEL_LONG_DOT);
@@ -833,6 +832,28 @@ void initUI() {
         lv_obj_add_flag(local_sensor_cnt, LV_OBJ_FLAG_HIDDEN);
     }
 
+    lv_obj_t *hangar_temperature_cnt = lv_obj_create(details_cnt);
+    lv_obj_clear_flag(hangar_temperature_cnt, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(hangar_temperature_cnt, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(hangar_temperature_cnt, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(hangar_temperature_cnt, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_bg_opa(hangar_temperature_cnt, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(hangar_temperature_cnt, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(hangar_temperature_cnt, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_column(hangar_temperature_cnt, 4, LV_PART_MAIN);
+
+    lv_obj_t *hangar_icon_lbl = lv_label_create(hangar_temperature_cnt);
+    lv_obj_set_style_text_font(hangar_icon_lbl, isLargeScreen ? &lv_font_montserrat_20 : &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_label_set_text(hangar_icon_lbl, LV_SYMBOL_HOME);
+    lv_obj_set_style_text_color(hangar_icon_lbl, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).green), LV_PART_MAIN);
+    lv_obj_set_width(hangar_icon_lbl, isLargeScreen ? 30 : 20);
+    lv_obj_set_style_text_align(hangar_icon_lbl, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+
+    hangar_temperature_label = lv_label_create(hangar_temperature_cnt);
+    lv_label_set_text(hangar_temperature_label, "Hangar: --.- °C");
+    lv_obj_set_style_text_color(hangar_temperature_label, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).green), LV_PART_MAIN);
+    lv_obj_set_style_text_font(hangar_temperature_label, isLargeScreen ? &lv_font_montserrat_20 : &lv_font_montserrat_14, LV_PART_MAIN);
+
     // Footer bar: "Last Update: HH:MM | City Name"
     footer_label = lv_label_create(tab_curr);
     lv_label_set_text(footer_label, "Last Update: -- | --");
@@ -1012,7 +1033,7 @@ void initUI() {
     }
     lv_obj_add_event_cb(unit_sw, unit_sw_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
-    // Title & Version row
+    // Show Title row
     lv_obj_t * title_ver_row = lv_obj_create(left_col);
     lv_obj_clear_flag(title_ver_row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_size(title_ver_row, lv_pct(100), LV_SIZE_CONTENT);
@@ -1024,7 +1045,7 @@ void initUI() {
     lv_obj_clear_flag(title_ver_row, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t * title_ver_label = lv_label_create(title_ver_row);
-    lv_label_set_text(title_ver_label, isLargeScreen ? "Title & Version" : "Title & Ver");
+    lv_label_set_text(title_ver_label, "Show Title");
     lv_obj_set_style_text_color(title_ver_label, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).text), LV_PART_MAIN);
     lv_obj_set_style_text_font(title_ver_label, isLargeScreen ? &lv_font_montserrat_20 : &lv_font_montserrat_14, LV_PART_MAIN);
 
@@ -1520,6 +1541,13 @@ void initUI() {
     lv_obj_set_style_bg_color(ui_ta_hum_offset, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).mantle), LV_PART_MAIN);
     lv_obj_set_style_text_color(ui_ta_hum_offset, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).text), LV_PART_MAIN);
 
+    lv_obj_t *version_label = lv_label_create(right_col);
+    char version_text[48];
+    snprintf(version_text, sizeof(version_text), "Firmware: %s", APP_VERSION);
+    lv_label_set_text(version_label, version_text);
+    lv_obj_set_style_text_color(version_label, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).overlay0), LV_PART_MAIN);
+    lv_obj_set_style_text_font(version_label, isLargeScreen ? &lv_font_montserrat_14 : &lv_font_montserrat_10, LV_PART_MAIN);
+
     // Re-apply offline indicator state if active
     if (is_offline_mode) {
         updateOfflineIndicator(true);
@@ -1677,6 +1705,32 @@ void updateWeatherUI(float temperature, int humidity, const char* status, int we
     lv_obj_set_style_text_color(icon_lbl, lv_color_hex(getIconColor(weatherCode)), LV_PART_MAIN);
     lv_label_set_text(status_icon_lbl, getIconGlyph(weatherCode));
     lv_obj_set_style_text_color(status_icon_lbl, lv_color_hex(getIconColor(weatherCode)), LV_PART_MAIN);
+}
+
+void updateHangarReadingsUI(float temperatureC, bool temperatureValid,
+                            float voltageV, bool voltageValid) {
+    if (hangar_temperature_label == nullptr) {
+        return;
+    }
+    if (!temperatureValid && !voltageValid) {
+        lv_label_set_text(hangar_temperature_label, "Hangar: unavailable");
+        return;
+    }
+
+    char hangarText[48];
+    const bool imperial = settings.getUnitSystem() == UNIT_IMPERIAL;
+    const float displayTemperature = imperial ? temperatureC * 1.8f + 32.0f : temperatureC;
+    const char* temperatureUnit = imperial ? "°F" : "°C";
+    if (temperatureValid && voltageValid) {
+        snprintf(hangarText, sizeof(hangarText), "Hangar: %.1f %s | %.2f V",
+                 displayTemperature, temperatureUnit, voltageV);
+    } else if (temperatureValid) {
+        snprintf(hangarText, sizeof(hangarText), "Hangar: %.1f %s | -- V",
+                 displayTemperature, temperatureUnit);
+    } else {
+        snprintf(hangarText, sizeof(hangarText), "Hangar: unavailable | %.2f V", voltageV);
+    }
+    lv_label_set_text(hangar_temperature_label, hangarText);
 }
 
 void updateTimeUI(const char* time_str) {

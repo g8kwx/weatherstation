@@ -21,6 +21,8 @@ void updateWifiStatus(bool connected);
 void updateWifiAPMode(const char* apSSID);
 void updateOfflineIndicator(bool isOffline);
 void updateWeatherUI(float temperature, int humidity, const char* status, int weatherCode, float windSpeed, int windDirection);
+void updateHangarReadingsUI(float temperatureC, bool temperatureValid,
+                            float voltageV, bool voltageValid);
 void updateLocalSensorUI(float temperature, float humidity);
 void updateTimeUI(const char* time_str);
 void updateForecastUI(const WeatherData& data);

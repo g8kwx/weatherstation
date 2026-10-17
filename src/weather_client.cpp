@@ -4,6 +4,8 @@
 #include "config/config.h"
 #include "settings_manager.h"
 #include <time.h>
+#include <math.h>
+#include <stdlib.h>
 
 #ifndef METOFFICE_API_KEY
 #define METOFFICE_API_KEY ""
@@ -42,6 +44,37 @@ const char* const METOFFICE_ROOT_CA =
     "rqXRfboQnoZsG4q5WTP468SQvvG5\n"
     "-----END CERTIFICATE-----\n";
 
+const char* const THINGSPEAK_ROOT_CA =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn65TANBgkqhkiG9w0BAQsFADBh\n"
+    "MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3\n"
+    "d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBH\n"
+    "MjAeFw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVT\n"
+    "MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j\n"
+    "b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEcyMIIBIjANBgkqhkiG\n"
+    "9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuzfNNNx7a8myaJCtSnX/RrohCgiN9RlUyfuI\n"
+    "2/Ou8jqJkTx65qsGGmvPrC3oXgkkRLpimn7Wo6h+4FR1IAWsULecYxpsMNzaHxmx\n"
+    "1x7e/dfgy5SDN67sH0NO3Xss0r0upS/kqbitOtSZpLYl6ZtrAGCSYP9PIUkY92eQ\n"
+    "q2EGnI/yuum06ZIya7XzV+hdG82MHauVBJVJ8zUtluNJbd134/tJS7SsVQepj5Wz\n"
+    "tCO7TG1F8PapspUwtP1MVYwnSlcUfIKdzXOS0xZKBgyMUNGPHgm+F6HmIcr9g+UQ\n"
+    "vIOlCsRnKPZzFBQ9RnbDhxSJITRNrw9FDKZJobq7nMWxM4MphQIDAQABo0IwQDAP\n"
+    "BgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBhjAdBgNVHQ4EFgQUTiJUIBiV\n"
+    "5uNu5g/6+rkS7QYXjzkwDQYJKoZIhvcNAQELBQADggEBAGBnKJRvDkhj6zHd6mcY\n"
+    "1Yl9PMWLSn/pvtsrF9+wX3N3KjITOYFnQoQj8kVnNeyIv/iPsGEMNKSuIEyExtv4\n"
+    "NeF22d+mQrvHRAiGfzZ0JFrabA0UWTW98kndth/Jsw1HKj2ZL7tcu7XUIOGZX1NG\n"
+    "Fdtom/DzMNU+MeKNhJ7jitralj41E6Vf8PlwUHBHQRFXGU7Aj64GxJUTFy8bJZ91\n"
+    "8rGOmaFvE7FBcf6IKshPECBV1/MUReXgRPTqh5Uykw7+U0b6LJ3/iyK5S9kJRaTe\n"
+    "pLiaWN0bfVKfjllDiIGknibVb63dDcY3fe0Dkhvld1927jyNxF1WW6LZZm6zNTfl\n"
+    "MrY=\n"
+    "-----END CERTIFICATE-----\n";
+
+bool waitForSystemTime() {
+    for (int attempt = 0; attempt < 10 && time(nullptr) < 1577836800; attempt++) {
+        delay(500);
+    }
+    return time(nullptr) >= 1577836800;
+}
+
 time_t parseMetOfficeTime(const char* value) {
     if (!value || strlen(value) < 16 ||
         value[4] != '-' || value[7] != '-' ||
@@ -67,6 +100,32 @@ float metOfficeWindSpeed(float metresPerSecond) {
         : 3.6f);
 }
 
+bool parseMetOfficeHumidity(JsonVariantConst value, int& humidity) {
+    if (value.isNull()) {
+        return false;
+    }
+
+    float parsedValue;
+    if (value.is<const char*>()) {
+        const char* text = value.as<const char*>();
+        char* end = nullptr;
+        parsedValue = strtof(text, &end);
+        if (end == text || *end != '\0') {
+            return false;
+        }
+    } else if (value.is<float>() || value.is<int>()) {
+        parsedValue = value.as<float>();
+    } else {
+        return false;
+    }
+
+    if (!isfinite(parsedValue) || parsedValue < 0.0f || parsedValue > 100.0f) {
+        return false;
+    }
+    humidity = static_cast<int>(parsedValue + 0.5f);
+    return true;
+}
+
 String shortDayName(const char* date) {
     int year = (date[0] - '0') * 1000 + (date[1] - '0') * 100 +
                (date[2] - '0') * 10 + (date[3] - '0');
@@ -90,10 +149,7 @@ bool requestMetOfficeForecast(const char* frequency, const char* latitude,
         Serial.println("[Weather] Met Office API key is not configured.");
         return false;
     }
-    for (int attempt = 0; attempt < 10 && time(nullptr) < 1577836800; attempt++) {
-        delay(500);
-    }
-    if (time(nullptr) < 1577836800) {
+    if (!waitForSystemTime()) {
         Serial.println("[Weather] System clock is not synchronized for HTTPS validation.");
         return false;
     }
@@ -134,6 +190,84 @@ bool requestMetOfficeForecast(const char* frequency, const char* latitude,
 
 WeatherClient::WeatherClient()
     : _useZip(false), _zipResolved(false), _cityName("") {}
+
+bool WeatherClient::parseThingSpeakReadingsJson(const char* json, float& temperatureC,
+                                                bool& temperatureValid, float& voltageV,
+                                                bool& voltageValid) {
+    temperatureValid = false;
+    voltageValid = false;
+
+    StaticJsonDocument<512> doc;
+    DeserializationError error = deserializeJson(doc, json);
+    if (error) {
+        Serial.print("[ThingSpeak] JSON parse failed: ");
+        Serial.println(error.c_str());
+        return false;
+    }
+
+    const char* fieldNames[] = {"field1", "field3"};
+    float* values[] = {&temperatureC, &voltageV};
+    bool* validity[] = {&temperatureValid, &voltageValid};
+    for (size_t i = 0; i < 2; i++) {
+        const char* field = doc[fieldNames[i]];
+        if (field == nullptr || field[0] == '\0') {
+            Serial.printf("[ThingSpeak] Response is missing %s.\n", fieldNames[i]);
+            continue;
+        }
+
+        char* end = nullptr;
+        float value = strtof(field, &end);
+        if (end == field || *end != '\0' || !isfinite(value)) {
+            Serial.printf("[ThingSpeak] %s is not a valid reading.\n", fieldNames[i]);
+            continue;
+        }
+        *values[i] = value;
+        *validity[i] = true;
+    }
+    return temperatureValid || voltageValid;
+}
+
+bool WeatherClient::fetchThingSpeakReadings(float& temperatureC, bool& temperatureValid,
+                                            float& voltageV, bool& voltageValid) {
+#ifdef NATIVE_TEST
+    return parseThingSpeakReadingsJson(
+        "{\"field1\":\"22.30\",\"field3\":\"12.45\"}", temperatureC,
+        temperatureValid, voltageV, voltageValid);
+#else
+    temperatureValid = false;
+    voltageValid = false;
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[ThingSpeak] WiFi not connected; cannot fetch channel readings.");
+        return false;
+    }
+    if (!waitForSystemTime()) {
+        Serial.println("[ThingSpeak] System clock is not synchronized for HTTPS validation.");
+        return false;
+    }
+
+    WiFiClientSecure client;
+    client.setCACert(THINGSPEAK_ROOT_CA);
+    HTTPClient http;
+    http.setTimeout(15000);
+    const char* url = "https://api.thingspeak.com/channels/1997679/feeds/last.json";
+    if (!http.begin(client, url)) {
+        Serial.println("[ThingSpeak] Unable to connect to public channel.");
+        return false;
+    }
+
+    int httpCode = http.GET();
+    bool success = false;
+    if (httpCode == HTTP_CODE_OK) {
+        String payload = http.getString();
+        success = parseThingSpeakReadingsJson(payload.c_str(), temperatureC,
+                                              temperatureValid, voltageV, voltageValid);
+    } else {
+        Serial.printf("[ThingSpeak] Channel request failed: HTTP %d\n", httpCode);
+    }
+    http.end();
+    return success;
+#endif
+}
 
 bool WeatherClient::geocodeZip() {
 #ifdef NATIVE_TEST
@@ -504,7 +638,27 @@ bool WeatherClient::parseMetOfficeHourlyJson(const char* json, WeatherData& data
     }
 
     data.temperature = metOfficeTemperature(current["screenTemperature"].as<float>());
-    data.humidity = current["screenRelativeHumidity"] | 0;
+    if (!parseMetOfficeHumidity(current["screenRelativeHumidity"], data.humidity)) {
+        bool humidityFound = false;
+        for (size_t distance = 1; distance < timeSeries.size() && !humidityFound; distance++) {
+            if (currentIndex >= static_cast<int>(distance)) {
+                humidityFound = parseMetOfficeHumidity(
+                    timeSeries[currentIndex - distance]["screenRelativeHumidity"],
+                    data.humidity);
+            }
+            size_t futureIndex = static_cast<size_t>(currentIndex) + distance;
+            if (!humidityFound && futureIndex < timeSeries.size()) {
+                humidityFound = parseMetOfficeHumidity(
+                    timeSeries[futureIndex]["screenRelativeHumidity"], data.humidity);
+            }
+        }
+        if (!humidityFound) {
+            data.humidity = 0;
+            Serial.println("[Weather] Met Office hourly response has no valid humidity values.");
+        } else {
+            Serial.println("[Weather] Current Met Office hour has no humidity; using nearest hourly value.");
+        }
+    }
     data.weatherCode = metOfficeToWmoCode(current["significantWeatherCode"].as<int>());
     data.status = getWeatherDesc(data.weatherCode);
     data.windSpeed = metOfficeWindSpeed(current["windSpeed10m"] | 0.0f);

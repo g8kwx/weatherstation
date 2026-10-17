@@ -54,6 +54,12 @@ const unsigned long wifiUpdateInterval = 1000; // 1 second
 
 unsigned long lastWeatherUpdate = 0;
 bool hasInitialFetch = false;
+unsigned long lastHangarUpdate = 0;
+bool hasHangarFetch = false;
+float lastHangarTemperatureC = 0.0f;
+float lastHangarVoltageV = 0.0f;
+bool lastHangarTemperatureValid = false;
+bool lastHangarVoltageValid = false;
 bool footerNeedsTimeUpdate = false;
 String lastCityName = "";
 bool ntpInitialized = false;
@@ -467,6 +473,10 @@ void loop() {
     if (settings_unit_changed) {
         settings_unit_changed = false;
         Serial.println("[System] Temperature unit changed. Triggering weather refetch...");
+        if (hasHangarFetch) {
+            updateHangarReadingsUI(lastHangarTemperatureC, lastHangarTemperatureValid,
+                                   lastHangarVoltageV, lastHangarVoltageValid);
+        }
         hasInitialFetch = false;
     }
 
@@ -659,6 +669,26 @@ void loop() {
             // Check for weather updates
             unsigned long currentUpdateInterval = settings.getWeatherUpdateInterval() * 60 * 1000UL;
             if (!hasInitialFetch || (currentMillis - lastWeatherUpdate >= currentUpdateInterval)) {
+                if (!hasHangarFetch || (currentMillis - lastHangarUpdate >= currentUpdateInterval)) {
+                    lastHangarUpdate = currentMillis;
+                    hasHangarFetch = true;
+                    float temperatureC = 0.0f;
+                    float voltageV = 0.0f;
+                    bool temperatureValid = false;
+                    bool voltageValid = false;
+                    weather.fetchThingSpeakReadings(temperatureC, temperatureValid,
+                                                    voltageV, voltageValid);
+                    updateHangarReadingsUI(temperatureC, temperatureValid,
+                                           voltageV, voltageValid);
+                    lastHangarTemperatureValid = temperatureValid;
+                    lastHangarVoltageValid = voltageValid;
+                    if (temperatureValid) {
+                        lastHangarTemperatureC = temperatureC;
+                    }
+                    if (voltageValid) {
+                        lastHangarVoltageV = voltageV;
+                    }
+                }
                 if (weather.isLocationEmpty()) {
                     Serial.println("[System] Location settings empty/default. Querying IP location fallback...");
                     String latStr, lonStr, city;

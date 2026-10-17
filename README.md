@@ -12,6 +12,7 @@ A beautiful, configurable real-time weather station and desk clock built for the
 ## :star: Features
 
 - **UK Met Office Weather DataHub**: Retrieves hourly conditions and a three-day daily forecast for the configured coordinates over verified HTTPS using the API key in `config/secrets.h`.
+- **Hangar Readings**: Displays field 1 temperature and field 3 voltage from the public ThingSpeak channel 1997679 on the Current screen, refreshed on the configured weather update interval.
 - **Location Resolution & City Name Footer**:
   - Displays `Last Update: <time> | <city name>` centered at the bottom of the screen.
   - **Zip Code Geocoding**: Enter a US Zip Code (e.g. `90210`); coordinates are resolved on boot.

@@ -74,7 +74,7 @@ button:hover { background: #f5c2e7; }
 
 <div class='checkbox-group'>
     <input type='checkbox' id='show_title_version' name='show_title_version' value='1' %SHOW_TITLE_VERSION%>
-    <label for='show_title_version' title='Display app title and version number in the header'>Show Title & Version</label>
+    <label for='show_title_version' title='Display the app title in the header'>Show Title</label>
 </div>
 
 <div class='checkbox-group'>

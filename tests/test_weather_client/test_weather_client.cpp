@@ -145,6 +145,22 @@ void test_weather_client_parse_metoffice_hourly_json(void) {
     settings.setUnitSystem(UNIT_METRIC);
 }
 
+void test_weather_client_metoffice_humidity_falls_back_to_nearest_hour(void) {
+    WeatherData data = {};
+    const char* hourlyJson = "{"
+        "\"features\":[{\"properties\":{"
+            "\"timeSeries\":["
+                "{\"time\":\"2026-10-17T12:00Z\",\"screenTemperature\":15.5,\"windSpeed10m\":4.0,\"windDirectionFrom10m\":180,\"significantWeatherCode\":3},"
+                "{\"time\":\"2026-10-17T13:00Z\",\"screenTemperature\":16.5,\"screenRelativeHumidity\":75,\"windSpeed10m\":5.0,\"windDirectionFrom10m\":190,\"significantWeatherCode\":1}"
+            "]"
+        "}}]}";
+    time_t now = parseUtcDtTxt("2026-10-17 12:30:00");
+
+    TEST_ASSERT_TRUE(WeatherClient::parseMetOfficeHourlyJson(hourlyJson, data, now));
+    TEST_ASSERT_EQUAL_FLOAT(15.5f, data.temperature);
+    TEST_ASSERT_EQUAL(75, data.humidity);
+}
+
 void test_weather_client_parse_metoffice_daily_json(void) {
     settings.setUnitSystem(UNIT_METRIC);
     String originalTimezone = settings.getTimezone();
@@ -168,6 +184,36 @@ void test_weather_client_parse_metoffice_daily_json(void) {
     TEST_ASSERT_EQUAL_STRING("Mon", data.forecast[2].dayName.c_str());
     TEST_ASSERT_EQUAL_STRING("Slight rain", data.forecast[2].status.c_str());
     settings.setTimezone(originalTimezone);
+}
+
+void test_weather_client_parse_thingspeak_readings_json(void) {
+    float temperature = 0.0f;
+    float voltage = 0.0f;
+    bool temperatureValid = false;
+    bool voltageValid = false;
+    TEST_ASSERT_TRUE(WeatherClient::parseThingSpeakReadingsJson(
+        "{\"field1\":\"22.30\",\"field3\":\"12.45\"}", temperature,
+        temperatureValid, voltage, voltageValid));
+    TEST_ASSERT_EQUAL_FLOAT(22.3f, temperature);
+    TEST_ASSERT_EQUAL_FLOAT(12.45f, voltage);
+    TEST_ASSERT_TRUE(temperatureValid);
+    TEST_ASSERT_TRUE(voltageValid);
+
+    TEST_ASSERT_TRUE(WeatherClient::parseThingSpeakReadingsJson(
+        "{\"field1\":\"\",\"field3\":\"13.2\"}", temperature,
+        temperatureValid, voltage, voltageValid));
+    TEST_ASSERT_FALSE(temperatureValid);
+    TEST_ASSERT_TRUE(voltageValid);
+    TEST_ASSERT_EQUAL_FLOAT(13.2f, voltage);
+
+    TEST_ASSERT_FALSE(WeatherClient::parseThingSpeakReadingsJson(
+        "{\"field1\":\"not-a-temperature\",\"field3\":\"invalid\"}", temperature,
+        temperatureValid, voltage, voltageValid));
+    TEST_ASSERT_FALSE(temperatureValid);
+    TEST_ASSERT_FALSE(voltageValid);
+
+    TEST_ASSERT_FALSE(WeatherClient::parseThingSpeakReadingsJson(
+        "{ invalid", temperature, temperatureValid, voltage, voltageValid));
 }
 
 void test_weather_client_parse_owm_json(void) {
@@ -754,7 +800,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_weather_client_zip_code_initialization);
     RUN_TEST(test_weather_client_parse_weather_json_custom);
     RUN_TEST(test_weather_client_parse_metoffice_hourly_json);
+    RUN_TEST(test_weather_client_metoffice_humidity_falls_back_to_nearest_hour);
     RUN_TEST(test_weather_client_parse_metoffice_daily_json);
+    RUN_TEST(test_weather_client_parse_thingspeak_temperature_json);
     RUN_TEST(test_weather_client_parse_owm_json);
     RUN_TEST(test_weather_client_parse_ip_location_json);
     RUN_TEST(test_weather_client_parse_ip_location_json_fail);
