@@ -648,6 +648,8 @@ void WifiManager::startWebServer() {
         doc["sleep_start_time"] = settings.getSleepStartTime();
         doc["sleep_end_time"] = settings.getSleepEndTime();
         doc["weather_update_interval"] = settings.getWeatherUpdateInterval();
+        doc["weather_api"] = settings.getWeatherApiSource() == WEATHER_API_BPF
+            ? "bpf" : "global_spot";
         doc["hostname"] = settings.getHostname();
         doc["static_ip_enabled"] = settings.getStaticIpEnabled();
         doc["static_ip"] = settings.getStaticIp();
@@ -689,6 +691,13 @@ void WifiManager::startWebServer() {
             _webServer->send(400, "text/plain", "Invalid JSON");
             return;
         }
+        if (doc.containsKey("weather_api") &&
+            (!doc["weather_api"].is<const char*>() ||
+             (strcmp(doc["weather_api"], "global_spot") != 0 &&
+              strcmp(doc["weather_api"], "bpf") != 0))) {
+            _webServer->send(400, "text/plain", "Invalid weather_api");
+            return;
+        }
         
         if (doc.containsKey("unit_system")) settings.setUnitSystem(doc["unit_system"]);
         if (doc.containsKey("brightness")) settings.setBrightness(doc["brightness"]);
@@ -719,6 +728,10 @@ void WifiManager::startWebServer() {
         if (doc.containsKey("sleep_schedule_enabled")) settings.setSleepScheduleEnabled(doc["sleep_schedule_enabled"]);
         if (doc.containsKey("sleep_start_time")) settings.setSleepStartTime(doc["sleep_start_time"].as<String>());
         if (doc.containsKey("sleep_end_time")) settings.setSleepEndTime(doc["sleep_end_time"].as<String>());
+        if (doc.containsKey("weather_api")) {
+            settings.setWeatherApiSource(strcmp(doc["weather_api"], "bpf") == 0
+                ? WEATHER_API_BPF : WEATHER_API_GLOBAL_SPOT);
+        }
         if (doc.containsKey("weather_update_interval")) settings.setWeatherUpdateInterval(doc["weather_update_interval"]);
         doc["hostname"] = settings.getHostname();
         if (doc.containsKey("hostname")) settings.setHostname(doc["hostname"].as<String>());
@@ -908,6 +921,10 @@ void WifiManager::handleSettings() {
     html.replace("%NTP_SERVER%", settings.getNtpServer());
     html.replace("%USE_24H_CHECKED%", settings.getUse24HourFormat() ? "checked" : "");
     html.replace("%UPDATE_INTERVAL%", String(settings.getWeatherUpdateInterval()));
+    html.replace("%WEATHER_API_GLOBAL_SELECTED%",
+        settings.getWeatherApiSource() == WEATHER_API_GLOBAL_SPOT ? "selected" : "");
+    html.replace("%WEATHER_API_BPF_SELECTED%",
+        settings.getWeatherApiSource() == WEATHER_API_BPF ? "selected" : "");
 
     html.replace("%LOCAL_SENSOR_ENABLED_CHECKED%", settings.getLocalSensorEnabled() ? "checked" : "");
     html.replace("%LOCAL_SENSOR_TYPE_1_SELECTED%", settings.getLocalSensorType() == 1 ? "selected" : "");
@@ -957,6 +974,13 @@ void WifiManager::handleSettings() {
 }
 
 void WifiManager::handleSettingsSave() {
+    if (_webServer->hasArg("weather_api")) {
+        String source = _webServer->arg("weather_api");
+        if (source != "global_spot" && source != "bpf") {
+            _webServer->send(400, "text/plain", "Invalid weather_api");
+            return;
+        }
+    }
     if (_webServer->hasArg("unit_system")) settings.setUnitSystem(_webServer->arg("unit_system").toInt());
     if (_webServer->hasArg("theme_flavor")) settings.setThemeFlavor(_webServer->arg("theme_flavor").toInt());
     if (_webServer->hasArg("screen_orientation")) settings.setScreenOrientation(_webServer->arg("screen_orientation").toInt());
@@ -982,6 +1006,11 @@ void WifiManager::handleSettingsSave() {
     if (_webServer->hasArg("tz")) settings.setTimezone(_webServer->arg("tz"));
     if (_webServer->hasArg("ntp_server")) settings.setNtpServer(_webServer->arg("ntp_server"));
     settings.setUse24HourFormat(_webServer->hasArg("use_24h"));
+    if (_webServer->hasArg("weather_api")) {
+        String source = _webServer->arg("weather_api");
+        settings.setWeatherApiSource(source == "bpf"
+            ? WEATHER_API_BPF : WEATHER_API_GLOBAL_SPOT);
+    }
     if (_webServer->hasArg("update_interval")) settings.setWeatherUpdateInterval(_webServer->arg("update_interval").toInt());
     
     settings.setLocalSensorEnabled(_webServer->hasArg("local_sensor_enabled"));

@@ -11,6 +11,10 @@
 #define METOFFICE_BPF_API_KEY ""
 #endif
 
+#ifndef METOFFICE_API_KEY
+#define METOFFICE_API_KEY ""
+#endif
+
 extern SettingsManager settings;
 
 #ifndef NATIVE_TEST
@@ -199,10 +203,16 @@ String shortDayName(const char* date) {
 JsonVariantConst findBpfCoverage(JsonVariantConst root, const char* parameter) {
     JsonArrayConst coverages = root["coverages"].as<JsonArrayConst>();
     for (JsonVariantConst coverage : coverages) {
+        if (!coverage["ranges"][parameter].isNull()) {
+            return coverage;
+        }
         const char* id = coverage["id"] | "";
         if (strcmp(id, parameter) == 0) {
             return coverage;
         }
+    }
+    if (!root["ranges"][parameter].isNull()) {
+        return root;
     }
     return JsonVariantConst();
 }
@@ -249,9 +259,26 @@ bool readBpfCoverageValue(JsonVariantConst root, const char* parameter,
                 for (size_t i = 0; i < selections.size(); i++) {
                     JsonVariantConst selected = selections[i];
                     const char* selectedText = selected.as<const char*>();
+                    float selectedNumber = NAN;
+                    float requestedNumber = strtof(statisticValue, nullptr);
+                    if (selectedText != nullptr) {
+                        const char* numericStart = selectedText;
+                        while (*numericStart != '\0' &&
+                               !isdigit(static_cast<unsigned char>(*numericStart)) &&
+                               *numericStart != '-' && *numericStart != '+') {
+                            numericStart++;
+                        }
+                        char* numberEnd = nullptr;
+                        selectedNumber = strtof(numericStart, &numberEnd);
+                        if (numberEnd == numericStart) {
+                            selectedNumber = NAN;
+                        }
+                    } else if (selected.is<float>() || selected.is<int>()) {
+                        selectedNumber = selected.as<float>();
+                    }
                     if ((selectedText != nullptr && strcmp(selectedText, statisticValue) == 0) ||
-                        ((selected.is<float>() || selected.is<int>()) &&
-                         fabsf(selected.as<float>() - strtof(statisticValue, nullptr)) < 0.001f)) {
+                        (isfinite(selectedNumber) &&
+                         fabsf(selectedNumber - requestedNumber) < 0.001f)) {
                         coordinate = i;
                         break;
                     }
@@ -281,6 +308,35 @@ bool getBpfTimeValues(JsonVariantConst root, const char* parameter,
     if (coverage.isNull()) return false;
     timeValues = coverage["domain"]["axes"]["t"]["values"].as<JsonArrayConst>();
     return !timeValues.isNull() && timeValues.size() > 0;
+}
+
+bool addBpfCoverageFilter(JsonObject coverageFilter, const char* parameters) {
+    coverageFilter["type"] = true;
+    coverageFilter["id"] = true;
+    JsonObject axesFilter = coverageFilter["domain"]["axes"];
+    axesFilter["*"]["values"][0] = true;
+    const char* parameter = parameters;
+    while (*parameter != '\0') {
+        const char* separator = strchr(parameter, ',');
+        size_t length = separator != nullptr
+            ? static_cast<size_t>(separator - parameter)
+            : strlen(parameter);
+        if (length == 0 || length >= 96) {
+            return false;
+        }
+        char parameterName[96];
+        memcpy(parameterName, parameter, length);
+        parameterName[length] = '\0';
+        JsonObject rangeFilter = coverageFilter["ranges"][parameterName];
+        rangeFilter["axisNames"][0] = true;
+        rangeFilter["shape"][0] = true;
+        rangeFilter["values"][0] = true;
+        if (separator == nullptr) {
+            break;
+        }
+        parameter = separator + 1;
+    }
+    return true;
 }
 
 #ifndef NATIVE_TEST
@@ -337,7 +393,12 @@ bool reserveBpfCall() {
 bool requestBlendedForecast(const char* collection, const char* parameters,
                             const char* percentiles, const char* latitude,
                             const char* longitude, time_t start, time_t end,
-                            DynamicJsonDocument& response, bool probabilityCollection) {
+                            DynamicJsonDocument& response) {
+    if (response.capacity() == 0) {
+        Serial.printf("[Weather] Met Office BPF collection %s response buffer allocation failed.\n",
+            collection);
+        return false;
+    }
     if (strlen(METOFFICE_BPF_API_KEY) == 0) {
         Serial.println("[Weather] Met Office BPF API key is not configured.");
         return false;
@@ -411,39 +472,9 @@ bool requestBlendedForecast(const char* collection, const char* parameters,
         }
 
         StaticJsonDocument<2048> filter;
-        JsonObject coverageFilter = filter["coverages"][0];
-        coverageFilter["id"] = true;
-        JsonObject axesFilter = coverageFilter["domain"]["axes"];
-        axesFilter["t"]["values"][0] = true;
-        if (probabilityCollection) {
-            const char* parameter =
-                "probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01h";
-            axesFilter["threshold"]["values"][0] = true;
-            axesFilter["thresholds"]["values"][0] = true;
-            coverageFilter["ranges"][parameter]["axisNames"][0] = true;
-            coverageFilter["ranges"][parameter]["shape"][0] = true;
-            coverageFilter["ranges"][parameter]["values"][0] = true;
-        } else {
-            const char* parametersToKeep[] = {
-                "airTemperature1p5m",
-                "relativeHumidity1p5m",
-                "weatherCodePt01h",
-                "windSpeed10m",
-                "windFromDirection10mMean"
-            };
-            axesFilter["percentiles"]["values"][0] = true;
-            axesFilter["percentile"]["values"][0] = true;
-            for (const char* parameter : parametersToKeep) {
-                coverageFilter["ranges"][parameter]["axisNames"][0] = true;
-                coverageFilter["ranges"][parameter]["shape"][0] = true;
-                coverageFilter["ranges"][parameter]["values"][0] = true;
-            }
-        }
-        if (filter.overflowed()) {
-            Serial.printf("[Weather] BPF %s JSON filter overflow.\n", collection);
-            http.end();
-            return false;
-        }
+        filter["type"] = true;
+        filter["domainType"] = true;
+        filter["coverages"] = true;
 
         String transferEncoding = http.header("Transfer-Encoding");
         if (transferEncoding.equalsIgnoreCase("chunked")) {
@@ -456,8 +487,10 @@ bool requestBlendedForecast(const char* collection, const char* parameters,
         DeserializationError error = deserializeJson(
             response, http.getStream(), DeserializationOption::Filter(filter));
         if (error) {
-            Serial.printf("[Weather] Met Office BPF collection %s JSON error: %s.\n",
-                collection, error.c_str());
+            Serial.printf("[Weather] Met Office BPF collection %s JSON error: %s (document capacity=%u, used=%u).\n",
+                collection, error.c_str(),
+                static_cast<unsigned int>(response.capacity()),
+                static_cast<unsigned int>(response.memoryUsage()));
             http.end();
             return false;
         }
@@ -466,6 +499,50 @@ bool requestBlendedForecast(const char* collection, const char* parameters,
     }
     http.end();
     return httpCode == HTTP_CODE_OK;
+}
+
+bool requestMetOfficeForecast(const char* frequency, const char* latitude,
+                              const char* longitude, String& payload) {
+    if (strlen(METOFFICE_API_KEY) == 0) {
+        Serial.println("[Weather] Met Office Global Spot API key is not configured.");
+        return false;
+    }
+    if (!waitForSystemTime()) {
+        Serial.println("[Weather] System clock is not synchronized for HTTPS validation.");
+        return false;
+    }
+
+    String url = "https://data.hub.api.metoffice.gov.uk/sitespecific/v0/point/";
+    url += frequency;
+    url += "?latitude=";
+    url += latitude;
+    url += "&longitude=";
+    url += longitude;
+    url += "&excludeParameterMetadata=true&includeLocationName=true";
+
+    WiFiClientSecure client;
+    client.setCACert(METOFFICE_ROOT_CA);
+    HTTPClient http;
+    http.setTimeout(20000);
+    if (!http.begin(client, url)) {
+        Serial.printf("[Weather] Unable to connect to Met Office Global Spot %s forecast.\n",
+            frequency);
+        return false;
+    }
+
+    http.addHeader("Accept", "application/json");
+    http.addHeader("apikey", METOFFICE_API_KEY);
+    int httpCode = http.GET();
+    bool success = false;
+    if (httpCode == HTTP_CODE_OK) {
+        payload = http.getString();
+        success = true;
+    } else {
+        Serial.printf("[Weather] Met Office Global Spot %s forecast failed: HTTP %d\n",
+            frequency, httpCode);
+    }
+    http.end();
+    return success;
 }
 #endif
 
@@ -653,6 +730,28 @@ WeatherData WeatherClient::fetchWeather() {
         return data;
     }
 
+    if (settings.getWeatherApiSource() == WEATHER_API_GLOBAL_SPOT) {
+        String hourlyPayload;
+        if (!requestMetOfficeForecast("hourly", lat, lng, hourlyPayload) ||
+            !parseMetOfficeHourlyJson(hourlyPayload.c_str(), data)) {
+            data.valid = false;
+            return data;
+        }
+
+        String dailyPayload;
+        if (!requestMetOfficeForecast("daily", lat, lng, dailyPayload) ||
+            !parseMetOfficeDailyJson(dailyPayload.c_str(), data)) {
+            data.valid = false;
+            return data;
+        }
+
+        _cityName = data.cityName;
+        Serial.printf("[Weather] Met Office Global Spot success. Temp: %.1f, Hum: %d %%, Status: %s, Wind: %.1f, City: %s\n",
+            data.temperature, data.humidity, data.status.c_str(), data.windSpeed,
+            data.cityName.c_str());
+        return data;
+    }
+
     time_t now = time(nullptr);
     BpfTimeSelection timeSelection = {};
     {
@@ -660,7 +759,7 @@ WeatherData WeatherClient::fetchWeather() {
         if (!requestBlendedForecast(
                 "uk-spot-percentiles",
                 "airTemperature1p5m,relativeHumidity1p5m,weatherCodePt01h,windSpeed10m,windFromDirection10mMean",
-                "50", lat, lng, now, now + 96 * 60 * 60, percentileResponse, false) ||
+                "50", lat, lng, now, now + 96 * 60 * 60, percentileResponse) ||
             !parseBlendedPercentileDocument(percentileResponse, data, now,
                                             &WeatherClient::metOfficeToWmoCode,
                                             timeSelection)) {
@@ -669,11 +768,11 @@ WeatherData WeatherClient::fetchWeather() {
         }
     }
 
-    DynamicJsonDocument probabilityResponse(16384);
+    DynamicJsonDocument probabilityResponse(49152);
     if (!requestBlendedForecast(
             "uk-spot-probabilities",
             "probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01h",
-            "", lat, lng, now, now + 96 * 60 * 60, probabilityResponse, true) ||
+            "", lat, lng, now, now + 96 * 60 * 60, probabilityResponse) ||
         !parseBlendedProbabilityDocument(probabilityResponse, data, now, timeSelection)) {
         data.valid = false;
         return data;
@@ -1065,50 +1164,32 @@ bool WeatherClient::parseBlendedProbabilisticJson(const char* percentileJson,
         return false;
     }
 
-    const char* percentileParameters[] = {
-        "airTemperature1p5m",
-        "relativeHumidity1p5m",
-        "weatherCodePt01h",
-        "windSpeed10m",
-        "windFromDirection10mMean"
-    };
-    const char* precipitationParameter =
-        "probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01h";
-
     StaticJsonDocument<2048> percentileFilter;
-    JsonObject percentileCoverageFilter = percentileFilter["coverages"][0];
-    percentileCoverageFilter["id"] = true;
-    JsonObject percentileAxesFilter = percentileCoverageFilter["domain"]["axes"];
-    percentileAxesFilter["t"]["values"][0] = true;
-    percentileAxesFilter["percentiles"]["values"][0] = true;
-    percentileAxesFilter["percentile"]["values"][0] = true;
-    JsonObject percentileRangesFilter = percentileCoverageFilter["ranges"];
-    for (const char* parameter : percentileParameters) {
-        percentileRangesFilter[parameter]["axisNames"][0] = true;
-        percentileRangesFilter[parameter]["shape"][0] = true;
-        percentileRangesFilter[parameter]["values"][0] = true;
-    }
-    if (percentileFilter.overflowed()) {
+    percentileFilter["type"] = true;
+    const char* percentileParameters =
+        "airTemperature1p5m,relativeHumidity1p5m,weatherCodePt01h,windSpeed10m,windFromDirection10mMean";
+    bool percentileFilterReady =
+        addBpfCoverageFilter(percentileFilter["coverages"][0], percentileParameters) &&
+        addBpfCoverageFilter(percentileFilter.as<JsonObject>(), percentileParameters);
+    if (!percentileFilterReady || percentileFilter.overflowed()) {
         Serial.println("[Weather] BPF percentile JSON filter overflow.");
         return false;
     }
 
     StaticJsonDocument<1024> probabilityFilter;
-    JsonObject probabilityCoverageFilter = probabilityFilter["coverages"][0];
-    probabilityCoverageFilter["id"] = true;
-    probabilityCoverageFilter["domain"]["axes"]["t"]["values"][0] = true;
-    probabilityCoverageFilter["domain"]["axes"]["threshold"]["values"][0] = true;
-    probabilityCoverageFilter["domain"]["axes"]["thresholds"]["values"][0] = true;
-    probabilityCoverageFilter["ranges"][precipitationParameter]["axisNames"][0] = true;
-    probabilityCoverageFilter["ranges"][precipitationParameter]["shape"][0] = true;
-    probabilityCoverageFilter["ranges"][precipitationParameter]["values"][0] = true;
-    if (probabilityFilter.overflowed()) {
+    probabilityFilter["type"] = true;
+    const char* precipitationParameter =
+        "probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01h";
+    bool probabilityFilterReady =
+        addBpfCoverageFilter(probabilityFilter["coverages"][0], precipitationParameter) &&
+        addBpfCoverageFilter(probabilityFilter.as<JsonObject>(), precipitationParameter);
+    if (!probabilityFilterReady || probabilityFilter.overflowed()) {
         Serial.println("[Weather] BPF probability JSON filter overflow.");
         return false;
     }
 
     DynamicJsonDocument percentileDoc(32768);
-    DynamicJsonDocument probabilityDoc(16384);
+    DynamicJsonDocument probabilityDoc(65536);
     DeserializationError error = deserializeJson(
         percentileDoc, percentileJson, DeserializationOption::Filter(percentileFilter));
     if (error) {
@@ -1163,6 +1244,25 @@ bool parseBlendedPercentileDocument(JsonVariantConst percentileRoot,
             static_cast<unsigned int>(coverages.size()));
         for (JsonVariantConst coverage : coverages) {
             const char* id = coverage["id"] | "(no id)";
+            JsonObjectConst coverageParameters =
+                coverage["parameters"].as<JsonObjectConst>();
+            Serial.printf("[Weather] BPF percentile coverage %s parameters:", id);
+            for (JsonPairConst parameter : coverageParameters) {
+                Serial.printf(" %s", parameter.key().c_str());
+            }
+            Serial.println();
+            JsonObjectConst coverageObject = coverage.as<JsonObjectConst>();
+            Serial.printf("[Weather] BPF percentile coverage %s keys:", id);
+            for (JsonPairConst member : coverageObject) {
+                Serial.printf(" %s", member.key().c_str());
+            }
+            Serial.println();
+            JsonObjectConst ranges = coverage["ranges"].as<JsonObjectConst>();
+            Serial.printf("[Weather] BPF percentile coverage %s ranges:", id);
+            for (JsonPairConst range : ranges) {
+                Serial.printf(" %s", range.key().c_str());
+            }
+            Serial.println();
             JsonObjectConst axes = coverage["domain"]["axes"].as<JsonObjectConst>();
             Serial.printf("[Weather] BPF percentile coverage %s axes:", id);
             for (JsonPairConst axis : axes) {
@@ -1329,6 +1429,21 @@ bool parseBlendedProbabilityDocument(JsonVariantConst probabilityRoot,
         Serial.println("[Weather] BPF response cannot be aligned before time synchronization.");
         return false;
     }
+    JsonVariantConst coverage = findBpfCoverage(probabilityRoot, precipitationParameter);
+    JsonArrayConst axisNames =
+        coverage["ranges"][precipitationParameter]["axisNames"].as<JsonArrayConst>();
+    const char* thresholdAxis = nullptr;
+    for (JsonVariantConst axisName : axisNames) {
+        const char* name = axisName | "";
+        if (strcmp(name, "t") != 0) {
+            thresholdAxis = name;
+            break;
+        }
+    }
+    if (thresholdAxis == nullptr) {
+        Serial.println("[Weather] BPF probability response is missing its threshold axis.");
+        return false;
+    }
     for (int i = 0; i < 24; i++) {
         size_t sourceIndex = selection.currentIndex + static_cast<size_t>(i);
         if (sourceIndex >= times.size()) {
@@ -1337,7 +1452,7 @@ bool parseBlendedProbabilityDocument(JsonVariantConst probabilityRoot,
         }
         float probability;
         if (!readBpfCoverageValue(probabilityRoot, precipitationParameter, sourceIndex,
-                                  nullptr, nullptr, probability) ||
+                                  thresholdAxis, "0.1", probability) ||
             probability < 0.0f || probability > 100.0f) {
             Serial.println("[Weather] BPF response is missing hourly precipitation probability.");
             return false;

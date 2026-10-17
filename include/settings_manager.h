@@ -7,6 +7,11 @@
 #include "Arduino.h"
 #endif
 
+enum WeatherApiSource {
+    WEATHER_API_GLOBAL_SPOT = 0,
+    WEATHER_API_BPF = 1
+};
+
 class SettingsManager {
 private:
     int _unitSystem;
@@ -49,6 +54,7 @@ private:
     String _ntpServer;
     bool _use24HourFormat;
     int _weatherUpdateInterval;
+    int _weatherApiSource;
     bool _localSensorEnabled;
     int _localSensorType;
     int _localSensorUpdateInterval;
@@ -171,6 +177,8 @@ public:
 
     int getWeatherUpdateInterval() const;
     void setWeatherUpdateInterval(int interval);
+    int getWeatherApiSource() const;
+    void setWeatherApiSource(int source);
 
     bool getLocalSensorEnabled() const;
     void setLocalSensorEnabled(bool enabled);

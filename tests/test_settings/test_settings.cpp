@@ -29,6 +29,7 @@ void test_settings_default_values(void) {
     TEST_ASSERT_EQUAL(SCREENSAVER_ENABLED, settings.getScreensaverEnabled());
     TEST_ASSERT_EQUAL(SCREENSAVER_TIMEOUT_MS, settings.getScreensaverTimeout());
     TEST_ASSERT_EQUAL(WEATHER_UPDATE_INTERVAL_MINS, settings.getWeatherUpdateInterval());
+    TEST_ASSERT_EQUAL(WEATHER_API_GLOBAL_SPOT, settings.getWeatherApiSource());
     TEST_ASSERT_EQUAL(API_SERVER_ENABLED, settings.getApiServerEnabled());
     TEST_ASSERT_EQUAL(false, settings.getStaticIpEnabled());
     TEST_ASSERT_EQUAL_STRING("", settings.getStaticIp().c_str());
@@ -61,7 +62,8 @@ void test_settings_save_and_load(void) {
     settings.setSdCacheEnabled(false);
     settings.setScreensaverEnabled(!SCREENSAVER_ENABLED);
     settings.setScreensaverTimeout(600000);
-    settings.setWeatherUpdateInterval(15);
+    settings.setWeatherUpdateInterval(60);
+    settings.setWeatherApiSource(WEATHER_API_BPF);
     settings.setApiServerEnabled(!API_SERVER_ENABLED);
     settings.setStaticIpEnabled(true);
     settings.setStaticIp("192.168.1.100");
@@ -88,7 +90,8 @@ void test_settings_save_and_load(void) {
     TEST_ASSERT_EQUAL(false, settings_new.getSdCacheEnabled());
     TEST_ASSERT_EQUAL(!SCREENSAVER_ENABLED, settings_new.getScreensaverEnabled());
     TEST_ASSERT_EQUAL(600000, settings_new.getScreensaverTimeout());
-    TEST_ASSERT_EQUAL(15, settings_new.getWeatherUpdateInterval());
+    TEST_ASSERT_EQUAL(60, settings_new.getWeatherUpdateInterval());
+    TEST_ASSERT_EQUAL(WEATHER_API_BPF, settings_new.getWeatherApiSource());
     TEST_ASSERT_EQUAL(!API_SERVER_ENABLED, settings_new.getApiServerEnabled());
     TEST_ASSERT_EQUAL(true, settings_new.getStaticIpEnabled());
     TEST_ASSERT_EQUAL_STRING("192.168.1.100", settings_new.getStaticIp().c_str());
@@ -172,9 +175,23 @@ void test_settings_clamping(void) {
     settings.setLedBrightness(300);
     TEST_ASSERT_EQUAL(255, settings.getLedBrightness());
 
-    // Weather update interval clamping (min 1)
+    // Weather update interval clamping depends on selected API.
     settings.setWeatherUpdateInterval(0);
-    TEST_ASSERT_EQUAL(1, settings.getWeatherUpdateInterval());
+    TEST_ASSERT_EQUAL(8, settings.getWeatherUpdateInterval());
+    settings.setWeatherApiSource(WEATHER_API_BPF);
+    TEST_ASSERT_EQUAL(60, settings.getWeatherUpdateInterval());
+    settings.setWeatherApiSource(WEATHER_API_GLOBAL_SPOT);
+    settings.setWeatherUpdateInterval(8);
+    TEST_ASSERT_EQUAL(8, settings.getWeatherUpdateInterval());
+    Preferences prefs;
+    prefs.begin("settings", false);
+    prefs.putInt("upd_int", 5);
+    prefs.end();
+    SettingsManager reloadedSettings;
+    reloadedSettings.begin();
+    TEST_ASSERT_EQUAL(8, reloadedSettings.getWeatherUpdateInterval());
+    settings.setWeatherApiSource(-1);
+    TEST_ASSERT_EQUAL(WEATHER_API_GLOBAL_SPOT, settings.getWeatherApiSource());
 
     // Local sensor update interval clamping (min 1)
     settings.setLocalSensorUpdateInterval(0);

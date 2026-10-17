@@ -11,7 +11,7 @@ A beautiful, configurable real-time weather station and desk clock built for the
 
 ## :star: Features
 
-- **UK Met Office Weather DataHub**: Retrieves hourly conditions and a three-day daily forecast for the configured coordinates over verified HTTPS using the API key in `config/secrets.h`.
+- **UK Met Office Weather APIs**: The station has reverted to the Global Spot (Spot) API as its default weather source. A switch in Settings lets you select either Global Spot or the Blended Probabilistic Forecast (BPF) API. Both provide hourly conditions and a three-day forecast for the configured coordinates over verified HTTPS. Configure the corresponding API key in `config/secrets.h`; BPF updates run no more frequently than hourly and use a persistent 50-request rolling 24-hour cap.
 - **Hangar Readings**: Displays field 1 temperature and field 3 voltage from the public ThingSpeak channel 1997679 on the Current screen, refreshed on the configured weather update interval.
 - **Location Resolution & City Name Footer**:
   - Displays `Last Update: <time> | <city name>` centered at the bottom of the screen.
@@ -312,7 +312,8 @@ Example JSON response:
   "sleep_schedule_enabled": false,
   "sleep_start_time": "22:00",
   "sleep_end_time": "07:00",
-  "weather_update_interval": 15,
+  "weather_update_interval": 60,
+  "weather_api": "global_spot",
   "static_ip_enabled": false,
   "static_ip": "192.168.1.8",
   "static_gateway": "192.168.1.1",
@@ -409,9 +410,18 @@ Wi-Fi credentials and API keys live in a Git-ignored secrets file to prevent com
    // This can also be changed at runtime via the Web Settings UI.
    #define AP_PASSWORD ""
 
-   // Required for weather forecasts from the UK Met Office DataHub.
+   // Required when using the Global Spot weather API.
    #define METOFFICE_API_KEY "YOUR_MET_OFFICE_API_KEY"
+
+   // Required when using Met Office Blended Probabilistic Forecast API v2.
+   #define METOFFICE_BPF_API_KEY "YOUR_MET_OFFICE_BPF_API_KEY"
+
+   // Optional: Home Assistant controls and sensors on the Development tab.
+   // Create a long-lived access token in Home Assistant and keep it private.
+   #define HA_API_BASE_URL "http://homeassistant.local:8123"
+   #define HA_API_TOKEN "YOUR_LONG_LIVED_ACCESS_TOKEN"
    ```
+   The Sonoff entity IDs are configured alongside these values in `secrets.h.example`. The token is compiled into the firmware and can be extracted from the device; use a dedicated Home Assistant user/token and revoke it if no longer needed. This setup uses plain HTTP, so the token is unencrypted on your LAN; use it only on a trusted network.
 
 #### Configuration
 
@@ -430,10 +440,10 @@ Location (US ZIP code or coordinates) is configured dynamically via the **Captiv
 ```
 *(Note: If you leave these fields empty in both the code and the Wi-Fi Setup page, the device will automatically detect your location via IP Geolocation).*
 
-**Weather update interval:**
-You can change the update interval dynamically via the Web Settings UI, or set the default fallback here:
+**Weather API and update interval:**
+The station is currently reverted to **Global Spot** by default. Use the **Weather API** switch in the Web Settings UI or on-device Settings tab to select **Global Spot (Spot API)** or **BPF**; the selection is also available through the REST API and MQTT/Home Assistant. Global Spot uses two API calls per weather update and permits up to 360 calls per day, so its minimum interval is 8 minutes. BPF requires at least 60 minutes; a persistent rolling cap limits BPF requests to 50 in 24 hours:
 ```cpp
-#define WEATHER_UPDATE_INTERVAL_MINS 10
+#define WEATHER_UPDATE_INTERVAL_MINS 60
 ```
 
 **Screensaver:**
@@ -571,7 +581,8 @@ When MQTT is enabled in settings, the CYD Weather Station connects to your confi
 | `<base_topic>settings/theme` | Catppuccin theme flavor | `Mocha` / `Macchiato` / `Frappe` / `Latte` |
 | `<base_topic>settings/units` | Unit system | `Imperial` / `Metric` |
 | `<base_topic>settings/screen_orientation`| Display orientation | `Landscape` / `Portrait` / `Landscape Rev` / `Portrait Rev` |
-| `<base_topic>settings/update_interval` | Weather update interval (mins) | `15` |
+| `<base_topic>settings/update_interval` | Weather update interval (mins) | `60` (minimum `8` for Global Spot; `60` for BPF) |
+| `<base_topic>settings/weather_api` | Met Office weather API | `Global Spot` / `BPF` |
 | `<base_topic>settings/screensaver_timeout`| Screensaver timeout (mins) | `5` |
 | `<base_topic>settings/sleep_schedule` | Sleep schedule switch state | `ON` / `OFF` |
 | `<base_topic>settings/sleep_start` | Sleep schedule start time | `22:00` |
@@ -598,7 +609,8 @@ When MQTT is enabled in settings, the CYD Weather Station connects to your confi
 | `<base_topic>command/theme` | `Mocha` / `Macchiato` / `Frappe` / `Latte` | Changes the active Catppuccin theme flavor. |
 | `<base_topic>command/units` | `Imperial` / `Metric` | Changes the temperature and wind speed unit system. |
 | `<base_topic>command/screen_orientation`| `Landscape` / `Portrait` / `Landscape Rev` / `Portrait Rev` | Changes display orientation dynamically. |
-| `<base_topic>command/update_interval` | `1`–`120` | Sets the weather fetch update interval in minutes. |
+| `<base_topic>command/update_interval` | `8`–`120` for Global Spot; `60`–`120` for BPF | Sets the weather fetch update interval in minutes. |
+| `<base_topic>command/weather_api` | `Global Spot` / `BPF` | Selects the Met Office weather API. |
 | `<base_topic>command/screensaver_timeout`| `1`–`60` | Sets screensaver activation inactivity timeout in minutes. |
 | `<base_topic>command/led` | `ON` / `OFF` / `1` / `0` | Enables or disables the onboard status RGB LED. |
 | `<base_topic>command/sd_log` | `ON` / `OFF` / `1` / `0` | Enables or disables SD card weather history logging. |
@@ -609,10 +621,10 @@ When MQTT is enabled in settings, the CYD Weather Station connects to your confi
 On connection, the device automatically registers itself as `CYD Weather Station <short_mac>` with full device hierarchy and exposes the following entities to Home Assistant:
 - **Weather Sensors**: Temperature (°F/°C), Humidity (%), Wind Speed (mph/m/s), Wind Direction, Weather Condition, City Name.
 - **Diagnostics Sensors**: Connection Status (binary sensor), Uptime (s), Free Memory (B), Wi-Fi Signal (dBm), IP Address, Firmware Version, MAC Address.
-- **Controls & Sliders (Numbers)**: Screen Brightness (0–100%), LED Brightness (0–100%), Weather Update Interval (1–120 min), Screensaver Timeout (1–60 min).
+- **Controls & Sliders (Numbers)**: Screen Brightness (0–100%), LED Brightness (0–100%), Weather Update Interval (8–120 min for Global Spot; 60–120 min for BPF), Screensaver Timeout (1–60 min).
 - **Configuration Switches**: Auto Brightness, Screensaver, Sleep Schedule, Status LED, SD Log, SD Cache.
 - **Text Controls**: Sleep Start Time, Sleep End Time, Hostname.
-- **Dropdown Selectors**: Theme Flavor, Unit System, Screen Orientation, Timezone.
+- **Dropdown Selectors**: Theme Flavor, Unit System, Screen Orientation, Weather API, Timezone.
 - **Buttons**: Device Reboot.
 
 #### Connection Management & Reconnect Backoff

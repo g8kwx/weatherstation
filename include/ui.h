@@ -33,6 +33,9 @@ void hideScreenSaver();
 void updateScreenSaverTime(const char* time_str);
 void setUIActiveTab(int index);
 void setUIOrientation(int rotation);
+bool takeHomeAssistantSwitchRequest(bool& turnOn);
+void updateHomeAssistantUI(const char* switchState, const char* temperature,
+                           const char* humidity, const char* status);
 const char* getCardinalDirection(int degrees);
 void showUIStatusMessage(const char* message);
 

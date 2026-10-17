@@ -46,6 +46,7 @@ static lv_obj_t *ui_brightness_slider = nullptr;
 static lv_obj_t *ui_led_brightness_slider = nullptr;
 static lv_obj_t *ui_sw_local_sensor = nullptr;
 static lv_obj_t *ui_dd_local_sensor_type = nullptr;
+static lv_obj_t *ui_dd_weather_api = nullptr;
 static lv_obj_t *ui_slider_local_sensor_update_interval = nullptr;
 static lv_obj_t *ui_ta_temp_offset = nullptr;
 static lv_obj_t *ui_ta_hum_offset = nullptr;
@@ -141,6 +142,19 @@ static lv_obj_t *hangar_temperature_label = nullptr;
 static lv_obj_t *local_sensor_cnt = nullptr;
 static lv_obj_t *local_sensor_lbl = nullptr;
 static lv_obj_t *tabview_obj = nullptr;
+static lv_obj_t *ha_switch_state_label = nullptr;
+static lv_obj_t *ha_temperature_label = nullptr;
+static lv_obj_t *ha_humidity_label = nullptr;
+static lv_obj_t *ha_status_label = nullptr;
+static volatile int ha_switch_request = 0;
+
+static void ha_turn_on_event_cb(lv_event_t * e) {
+    ha_switch_request = 1;
+}
+
+static void ha_turn_off_event_cb(lv_event_t * e) {
+    ha_switch_request = 2;
+}
 
 // Forecast widgets
 static lv_obj_t *fore_day_label[3];
@@ -206,6 +220,13 @@ static void local_sensor_type_dropdown_event_cb(lv_event_t * e) {
     int type = selected + 1;
     settings.setLocalSensorType(type);
     settings_local_sensor_changed = true;
+}
+
+static void weather_api_dropdown_event_cb(lv_event_t * e) {
+    lv_obj_t * dropdown = lv_event_get_target(e);
+    int source = lv_dropdown_get_selected(dropdown) == 1
+        ? WEATHER_API_BPF : WEATHER_API_GLOBAL_SPOT;
+    settings.setWeatherApiSource(source);
 }
 
 static void local_sensor_interval_slider_event_cb(lv_event_t * e) {
@@ -520,7 +541,7 @@ void initUI() {
     // Header Title (Time/App Name)
     header_title = lv_label_create(header);
     lv_label_set_text(header_title, isLandscape
-        ? "Pooh Corner Weather Station"
+        ? "Pooh Corner Met Office Weather"
         : "Pooh Corner\nWeather Station");
     lv_obj_set_style_text_color(header_title, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).text), LV_PART_MAIN);
     lv_obj_align(header_title, LV_ALIGN_LEFT_MID, 10, 0);
@@ -595,6 +616,7 @@ void initUI() {
     lv_obj_t * tab_fore = lv_tabview_add_tab(tabview, isLandscape ? "Forecast" : "Fore");
     lv_obj_t * tab_hourly = lv_tabview_add_tab(tabview, isLandscape ? "Hourly" : "Hour");
     lv_obj_t * tab_settings = lv_tabview_add_tab(tabview, isLandscape ? "Settings" : "Setup");
+    lv_obj_t * tab_development = lv_tabview_add_tab(tabview, isLandscape ? "Develop" : "Dev");
 
     // Set base color & padding on tabs
     // NOTE: Do NOT clear LV_OBJ_FLAG_SCROLLABLE on the tab panels —
@@ -604,15 +626,83 @@ void initUI() {
     lv_obj_set_style_bg_color(tab_fore, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).base), LV_PART_MAIN);
     lv_obj_set_style_bg_color(tab_hourly, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).base), LV_PART_MAIN);
     lv_obj_set_style_bg_color(tab_settings, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).base), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(tab_development, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).base), LV_PART_MAIN);
     lv_obj_set_style_pad_all(tab_curr, 5, LV_PART_MAIN);
     lv_obj_set_style_pad_all(tab_fore, 5, LV_PART_MAIN);
     lv_obj_set_style_pad_all(tab_hourly, 5, LV_PART_MAIN);
     lv_obj_set_style_pad_all(tab_settings, 5, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(tab_development, 5, LV_PART_MAIN);
     // Hide scrollbars so they don't appear visually
     lv_obj_set_scrollbar_mode(tab_curr, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scrollbar_mode(tab_fore, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scrollbar_mode(tab_hourly, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scrollbar_mode(tab_settings, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scrollbar_mode(tab_development, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_t * development_panel = lv_obj_create(tab_development);
+    lv_obj_set_size(development_panel, lv_pct(100), lv_pct(100));
+    lv_obj_align(development_panel, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_flex_flow(development_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(development_panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_bg_opa(development_panel, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(development_panel, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(development_panel, 8, LV_PART_MAIN);
+    lv_obj_set_style_pad_gap(development_panel, 10, LV_PART_MAIN);
+    lv_obj_clear_flag(development_panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *development_title = lv_label_create(development_panel);
+    lv_label_set_text(development_title, "Sonoff");
+    lv_obj_set_style_text_color(development_title, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).text), LV_PART_MAIN);
+    lv_obj_set_style_text_font(development_title, isLargeScreen ? &lv_font_montserrat_20 : &lv_font_montserrat_14, LV_PART_MAIN);
+
+    ha_switch_state_label = lv_label_create(development_panel);
+    lv_label_set_text(ha_switch_state_label, "Power: --");
+    lv_obj_set_style_text_color(ha_switch_state_label, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).text), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ha_switch_state_label, isLargeScreen ? &lv_font_montserrat_20 : &lv_font_montserrat_14, LV_PART_MAIN);
+
+    lv_obj_t *ha_button_row = lv_obj_create(development_panel);
+    lv_obj_set_size(ha_button_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(ha_button_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(ha_button_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_bg_opa(ha_button_row, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(ha_button_row, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(ha_button_row, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_gap(ha_button_row, 12, LV_PART_MAIN);
+    lv_obj_clear_flag(ha_button_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *ha_on_button = lv_btn_create(ha_button_row);
+    lv_obj_set_size(ha_on_button, isLandscape ? 100 : 80, 40);
+    lv_obj_set_style_bg_color(ha_on_button, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).green), LV_PART_MAIN);
+    lv_obj_add_event_cb(ha_on_button, ha_turn_on_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ha_on_label = lv_label_create(ha_on_button);
+    lv_label_set_text(ha_on_label, "ON");
+    lv_obj_center(ha_on_label);
+
+    lv_obj_t *ha_off_button = lv_btn_create(ha_button_row);
+    lv_obj_set_size(ha_off_button, isLandscape ? 100 : 80, 40);
+    lv_obj_set_style_bg_color(ha_off_button, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).red), LV_PART_MAIN);
+    lv_obj_add_event_cb(ha_off_button, ha_turn_off_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ha_off_label = lv_label_create(ha_off_button);
+    lv_label_set_text(ha_off_label, "OFF");
+    lv_obj_center(ha_off_label);
+
+    ha_temperature_label = lv_label_create(development_panel);
+    lv_label_set_text(ha_temperature_label, "Temperature: --");
+    lv_obj_set_style_text_color(ha_temperature_label, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).text), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ha_temperature_label, isLargeScreen ? &lv_font_montserrat_20 : &lv_font_montserrat_14, LV_PART_MAIN);
+
+    ha_humidity_label = lv_label_create(development_panel);
+    lv_label_set_text(ha_humidity_label, "Humidity: --");
+    lv_obj_set_style_text_color(ha_humidity_label, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).text), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ha_humidity_label, isLargeScreen ? &lv_font_montserrat_20 : &lv_font_montserrat_14, LV_PART_MAIN);
+
+    ha_status_label = lv_label_create(development_panel);
+    lv_label_set_text(ha_status_label, "Waiting for Home Assistant");
+    lv_obj_set_width(ha_status_label, lv_pct(95));
+    lv_label_set_long_mode(ha_status_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(ha_status_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_style_text_color(ha_status_label, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).overlay0), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ha_status_label, isLargeScreen ? &lv_font_montserrat_14 : &lv_font_montserrat_10, LV_PART_MAIN);
 
     // Create Hourly Forecast Chart
     hourly_chart = lv_chart_create(tab_hourly);
@@ -1435,6 +1525,28 @@ void initUI() {
     lv_obj_add_event_cb(ui_24h_sw, use_24h_sw_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
 
+    // Weather API selector dropdown
+    lv_obj_t * weather_api_label = lv_label_create(right_col);
+    lv_label_set_text(weather_api_label, "Weather API");
+    lv_obj_set_style_text_color(weather_api_label, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).text), LV_PART_MAIN);
+    lv_obj_set_style_text_font(weather_api_label, isLargeScreen ? &lv_font_montserrat_20 : &lv_font_montserrat_14, LV_PART_MAIN);
+
+    ui_dd_weather_api = lv_dropdown_create(right_col);
+    lv_obj_set_size(ui_dd_weather_api, lv_pct(92), 26);
+    lv_dropdown_set_options(ui_dd_weather_api, "Global Spot\nBPF");
+    lv_dropdown_set_selected(ui_dd_weather_api, settings.getWeatherApiSource());
+    lv_obj_add_event_cb(ui_dd_weather_api, weather_api_dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_set_style_bg_color(ui_dd_weather_api, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).crust), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(ui_dd_weather_api, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).text), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(ui_dd_weather_api, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).overlay0), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(ui_dd_weather_api, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_t * weather_api_list = lv_dropdown_get_list(ui_dd_weather_api);
+    lv_obj_set_style_bg_color(weather_api_list, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).crust), LV_PART_MAIN);
+    lv_obj_set_style_text_color(weather_api_list, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).text), LV_PART_MAIN);
+    lv_obj_set_style_border_color(weather_api_list, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).overlay0), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(weather_api_list, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).blue), LV_PART_SELECTED | LV_STATE_CHECKED);
+    lv_obj_set_style_text_color(weather_api_list, TO_LV_COLOR(getCatppuccinFlavor(getCurrentThemeFlavor()).crust), LV_PART_SELECTED | LV_STATE_CHECKED);
+
     // Theme selector dropdown
     lv_obj_t * theme_dropdown = lv_dropdown_create(right_col);
     lv_obj_set_size(theme_dropdown, lv_pct(92), 26);
@@ -1839,8 +1951,31 @@ void updateFooterUI(const char* update_time, const char* city) {
 }
 
 void setUIActiveTab(int index) {
-    if (tabview_obj != nullptr && index >= 0 && index < 4) {
+    if (tabview_obj != nullptr && index >= 0 && index < 5) {
         lv_tabview_set_act(tabview_obj, index, LV_ANIM_OFF);
+    }
+}
+
+bool takeHomeAssistantSwitchRequest(bool& turnOn) {
+    if (ha_switch_request == 0) return false;
+    turnOn = ha_switch_request == 1;
+    ha_switch_request = 0;
+    return true;
+}
+
+void updateHomeAssistantUI(const char* switchState, const char* temperature,
+                           const char* humidity, const char* status) {
+    if (ha_switch_state_label != nullptr && switchState != nullptr) {
+        lv_label_set_text_fmt(ha_switch_state_label, "Power: %s", switchState);
+    }
+    if (ha_temperature_label != nullptr && temperature != nullptr) {
+        lv_label_set_text_fmt(ha_temperature_label, "Temperature: %s", temperature);
+    }
+    if (ha_humidity_label != nullptr && humidity != nullptr) {
+        lv_label_set_text_fmt(ha_humidity_label, "Humidity: %s", humidity);
+    }
+    if (ha_status_label != nullptr && status != nullptr) {
+        lv_label_set_text(ha_status_label, status);
     }
 }
 
@@ -2091,6 +2226,9 @@ void ui_sync_toggles() {
 
     if (ui_dd_local_sensor_type != nullptr) {
         lv_dropdown_set_selected(ui_dd_local_sensor_type, settings.getLocalSensorType() - 1);
+    }
+    if (ui_dd_weather_api != nullptr) {
+        lv_dropdown_set_selected(ui_dd_weather_api, settings.getWeatherApiSource());
     }
     
     if (ui_slider_local_sensor_update_interval != nullptr) {

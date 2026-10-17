@@ -18,7 +18,7 @@
 #define WEATHER_CITY_CODE "Shamley Green"
 
 // UK Met Office Weather DataHub Settings
-#define WEATHER_UPDATE_INTERVAL_MINS 10
+#define WEATHER_UPDATE_INTERVAL_MINS 60
 
 // NTP and Timezone Settings
 // Note: We use POSIX strings for efficiency to avoid bundling a giant tzdata lookup table.

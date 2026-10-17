@@ -41,6 +41,9 @@ public:
     bool parseOwmJson(const char* json, WeatherData& data, time_t ref_time = 0);
     static bool parseMetOfficeHourlyJson(const char* json, WeatherData& data, time_t ref_time = 0);
     static bool parseMetOfficeDailyJson(const char* json, WeatherData& data, time_t ref_time = 0);
+    static bool parseBlendedProbabilisticJson(const char* percentileJson,
+                                              const char* probabilityJson,
+                                              WeatherData& data, time_t ref_time = 0);
     static bool parseThingSpeakReadingsJson(const char* json, float& temperatureC,
                                             bool& temperatureValid, float& voltageV,
                                             bool& voltageValid);

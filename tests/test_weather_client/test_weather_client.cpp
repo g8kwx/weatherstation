@@ -190,29 +190,29 @@ void test_weather_client_parse_bpf_coverage_json(void) {
     settings.setTimezone("UTC0");
     const char* percentileJson = R"json({
         "coverages":[
-            {"id":"airTemperature1p5m","domain":{"axes":{
+            {"domain":{"axes":{
                 "t":{"values":["2026-01-01T00:00Z","2026-01-01T01:00Z","2026-01-02T00:00Z","2026-01-03T00:00Z"]},
                 "percentiles":{"values":[10,50,90]}
             }},"ranges":{"airTemperature1p5m":{
                 "axisNames":["percentiles","t"],"shape":[3,4],
                 "values":[280,281,282,283,290,291,292,293,300,301,302,303]
             }}},
-            {"id":"relativeHumidity1p5m","domain":{"axes":{
+            {"domain":{"axes":{
                 "t":{"values":["2026-01-01T00:00Z","2026-01-01T01:00Z","2026-01-02T00:00Z","2026-01-03T00:00Z"]}
             }},"ranges":{"relativeHumidity1p5m":{
                 "axisNames":["t"],"shape":[4],"values":[75,74,73,72]
             }}},
-            {"id":"weatherCodePt01h","domain":{"axes":{
+            {"domain":{"axes":{
                 "t":{"values":["2026-01-01T00:00Z","2026-01-01T01:00Z","2026-01-02T00:00Z","2026-01-03T00:00Z"]}
             }},"ranges":{"weatherCodePt01h":{
                 "axisNames":["t"],"shape":[4],"values":[14,13,3,1]
             }}},
-            {"id":"windSpeed10m","domain":{"axes":{
+            {"domain":{"axes":{
                 "t":{"values":["2026-01-01T00:00Z","2026-01-01T01:00Z","2026-01-02T00:00Z","2026-01-03T00:00Z"]}
             }},"ranges":{"windSpeed10m":{
                 "axisNames":["t"],"shape":[4],"values":[3.6,4,5,6]
             }}},
-            {"id":"windFromDirection10mMean","domain":{"axes":{
+            {"domain":{"axes":{
                 "t":{"values":["2026-01-01T00:00Z","2026-01-01T01:00Z","2026-01-02T00:00Z","2026-01-03T00:00Z"]}
             }},"ranges":{"windFromDirection10mMean":{
                 "axisNames":["t"],"shape":[4],"values":[225,230,235,240]
@@ -223,14 +223,14 @@ void test_weather_client_parse_bpf_coverage_json(void) {
         "coverages":[{
             "id":"probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01h",
             "domain":{"axes":{
-                "threshold":{"values":[0.1,1]},
+                "probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01hValues":{"values":[">0.05",">0.1",">0.2"]},
                 "t":{"values":[
                     "2026-01-01T00:00Z","2026-01-01T01:00Z","2026-01-02T00:00Z","2026-01-03T00:00Z"
                 ]}
             }},
             "ranges":{"probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01h":{
-                "axisNames":["threshold","t"],"shape":[2,4],
-                "values":[0.1,0.25,0.5,0.75,0.01,0.02,0.03,0.04]
+                "axisNames":["probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01hValues","t"],"shape":[3,4],
+                "values":[0.8,0.85,0.9,0.95,0.1,0.25,0.5,0.75,0.01,0.02,0.03,0.04]
             }}
         }]
     })json";
@@ -262,6 +262,47 @@ void test_weather_client_parse_bpf_coverage_json(void) {
     TEST_ASSERT_EQUAL_FLOAT(17.85f, data.forecast[0].tempMax);
     TEST_ASSERT_EQUAL_STRING("Tmrw", data.forecast[1].dayName.c_str());
     TEST_ASSERT_EQUAL_STRING("Sat", data.forecast[2].dayName.c_str());
+    settings.setTimezone(originalTimezone);
+}
+
+void test_weather_client_parse_bpf_single_coverage_json(void) {
+    settings.setUnitSystem(UNIT_METRIC);
+    String originalTimezone = settings.getTimezone();
+    settings.setTimezone("UTC0");
+    const char* percentileJson = R"json({
+        "type":"Coverage",
+        "domain":{"axes":{
+            "t":{"values":["2026-01-01T00:00Z","2026-01-01T01:00Z","2026-01-02T00:00Z","2026-01-03T00:00Z"]},
+            "percentiles":{"values":[10,50,90]}
+        }},
+        "ranges":{
+            "airTemperature1p5m":{"axisNames":["percentiles","t"],"shape":[3,4],"values":[280,281,282,283,290,291,292,293,300,301,302,303]},
+            "relativeHumidity1p5m":{"axisNames":["t"],"shape":[4],"values":[75,74,73,72]},
+            "weatherCodePt01h":{"axisNames":["t"],"shape":[4],"values":[14,13,3,1]},
+            "windSpeed10m":{"axisNames":["t"],"shape":[4],"values":[3.6,4,5,6]},
+            "windFromDirection10mMean":{"axisNames":["t"],"shape":[4],"values":[225,230,235,240]}
+        }
+    })json";
+    const char* probabilityJson = R"json({
+        "type":"Coverage",
+        "domain":{"axes":{
+            "probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01hValues":{"values":[">0.05",">0.1",">0.2"]},
+            "t":{"values":["2026-01-01T00:00Z","2026-01-01T01:00Z","2026-01-02T00:00Z","2026-01-03T00:00Z"]}
+        }},
+        "ranges":{"probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01h":{
+            "axisNames":["probabilityOfLweThicknessOfPrecipitationAmountAboveThresholdSumPt01hValues","t"],"shape":[3,4],
+            "values":[0.8,0.85,0.9,0.95,0.1,0.25,0.5,0.75,0.01,0.02,0.03,0.04]
+        }}
+    })json";
+    WeatherData data = {};
+    time_t now = parseUtcDtTxt("2026-01-01 00:30:00");
+
+    TEST_ASSERT_TRUE(WeatherClient::parseBlendedProbabilisticJson(
+        percentileJson, probabilityJson, data, now));
+    TEST_ASSERT_TRUE(data.valid);
+    TEST_ASSERT_EQUAL_FLOAT(16.85f, data.temperature);
+    TEST_ASSERT_EQUAL(75, data.humidity);
+    TEST_ASSERT_EQUAL(10, data.hourly[0].precipitationProbability);
     settings.setTimezone(originalTimezone);
 }
 
@@ -922,6 +963,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_weather_client_parse_metoffice_hourly_json);
     RUN_TEST(test_weather_client_metoffice_descriptions_use_api_codes);
     RUN_TEST(test_weather_client_parse_bpf_coverage_json);
+    RUN_TEST(test_weather_client_parse_bpf_single_coverage_json);
     RUN_TEST(test_weather_client_metoffice_humidity_falls_back_to_nearest_hour);
     RUN_TEST(test_weather_client_parse_metoffice_daily_json);
     RUN_TEST(test_weather_client_parse_thingspeak_temperature_json);

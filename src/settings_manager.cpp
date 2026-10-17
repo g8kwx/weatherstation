@@ -54,6 +54,7 @@ SettingsManager::SettingsManager() {
     _owmApiKey = OPENWEATHERMAP_API_KEY;
     _ntpServer = NTP_SERVER;
     _weatherUpdateInterval = WEATHER_UPDATE_INTERVAL_MINS;
+    _weatherApiSource = WEATHER_API_GLOBAL_SPOT;
     _localSensorEnabled = LOCAL_SENSOR_ENABLED;
     _localSensorType = LOCAL_SENSOR_TYPE;
     _localSensorUpdateInterval = LOCAL_SENSOR_UPDATE_INTERVAL;
@@ -109,7 +110,18 @@ void SettingsManager::begin() {
     _longitude = prefs.getString("lon", WEATHER_API_LONGITUDE);
     _owmApiKey = prefs.getString("owm_api", OPENWEATHERMAP_API_KEY);
     _ntpServer = prefs.getString("ntp_srv", NTP_SERVER);
+    _weatherApiSource = prefs.getInt("weather_api", WEATHER_API_GLOBAL_SPOT);
+    if (_weatherApiSource != WEATHER_API_GLOBAL_SPOT &&
+        _weatherApiSource != WEATHER_API_BPF) {
+        _weatherApiSource = WEATHER_API_GLOBAL_SPOT;
+        prefs.putInt("weather_api", _weatherApiSource);
+    }
     _weatherUpdateInterval = prefs.getInt("upd_int", WEATHER_UPDATE_INTERVAL_MINS);
+    int minimumInterval = _weatherApiSource == WEATHER_API_BPF ? 60 : 8;
+    if (_weatherUpdateInterval < minimumInterval) {
+        _weatherUpdateInterval = minimumInterval;
+        prefs.putInt("upd_int", _weatherUpdateInterval);
+    }
     _localSensorEnabled = prefs.getBool("loc_sens_en", LOCAL_SENSOR_ENABLED);
     _localSensorType = prefs.getInt("loc_sens_typ", LOCAL_SENSOR_TYPE);
     _localSensorUpdateInterval = prefs.getInt("loc_sens_upd", LOCAL_SENSOR_UPDATE_INTERVAL);
@@ -511,13 +523,34 @@ int SettingsManager::getWeatherUpdateInterval() const {
 }
 
 void SettingsManager::setWeatherUpdateInterval(int interval) {
-    if (interval < 1) interval = 1;
+    int minimumInterval = _weatherApiSource == WEATHER_API_BPF ? 60 : 8;
+    if (interval < minimumInterval) interval = minimumInterval;
     if (_weatherUpdateInterval != interval) {
         _weatherUpdateInterval = interval;
         Preferences prefs;
         prefs.begin("settings", false);
         prefs.putInt("upd_int", _weatherUpdateInterval);
         prefs.end();
+    }
+}
+
+int SettingsManager::getWeatherApiSource() const {
+    return _weatherApiSource;
+}
+
+void SettingsManager::setWeatherApiSource(int source) {
+    if (source != WEATHER_API_GLOBAL_SPOT && source != WEATHER_API_BPF) {
+        return;
+    }
+    if (_weatherApiSource != source) {
+        _weatherApiSource = source;
+        Preferences prefs;
+        prefs.begin("settings", false);
+        prefs.putInt("weather_api", _weatherApiSource);
+        prefs.end();
+        if (_weatherApiSource == WEATHER_API_BPF) {
+            setWeatherUpdateInterval(60);
+        }
     }
 }
 
@@ -715,4 +748,3 @@ void SettingsManager::setShowTitleVersion(bool show) {
         prefs.end();
     }
 }
-

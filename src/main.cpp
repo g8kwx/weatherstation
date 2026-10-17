@@ -1,5 +1,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClient.h>
+#include <ArduinoJson.h>
 #include "display.h"
 #include "wifi_manager.h"
 #include "mqtt_manager.h"
@@ -66,6 +69,102 @@ bool ntpInitialized = false;
 unsigned long lastAutoBrightnessCheck = 0;
 bool force_mqtt_publish = false;
 bool pending_ui_sync = false;
+int lastWeatherApiSource = -1;
+
+static const unsigned long HOME_ASSISTANT_POLL_INTERVAL_MS = 30000;
+
+static String homeAssistantUrl(const char* path) {
+    String url = HA_API_BASE_URL;
+    if (url.endsWith("/")) {
+        url.remove(url.length() - 1);
+    }
+    url += path;
+    return url;
+}
+
+static bool homeAssistantConfigured() {
+    return HA_API_TOKEN[0] != '\0';
+}
+
+static bool getHomeAssistantState(const char* entityId, char* value, size_t valueSize, int& httpCode) {
+    WiFiClient client;
+    HTTPClient http;
+    String url = homeAssistantUrl((String("/api/states/") + entityId).c_str());
+    if (!http.begin(client, url)) {
+        httpCode = 0;
+        return false;
+    }
+
+    http.setTimeout(3000);
+    http.addHeader("Authorization", String("Bearer ") + HA_API_TOKEN);
+    http.addHeader("Accept", "application/json");
+    httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        http.end();
+        return false;
+    }
+
+    String response = http.getString();
+    http.end();
+
+    StaticJsonDocument<1024> doc;
+    DeserializationError error = deserializeJson(doc, response);
+    if (error) {
+        httpCode = -1;
+        return false;
+    }
+
+    const char* state = doc["state"] | "unknown";
+    const char* unit = doc["attributes"]["unit_of_measurement"] | "";
+    if (unit[0] == '\0') {
+        snprintf(value, valueSize, "%s", state);
+    } else {
+        snprintf(value, valueSize, "%s %s", state, unit);
+    }
+    return true;
+}
+
+static bool setHomeAssistantSwitch(bool turnOn, int& httpCode) {
+    WiFiClient client;
+    HTTPClient http;
+    const char* service = turnOn ? "turn_on" : "turn_off";
+    String url = homeAssistantUrl((String("/api/services/switch/") + service).c_str());
+    if (!http.begin(client, url)) {
+        httpCode = 0;
+        return false;
+    }
+
+    StaticJsonDocument<128> doc;
+    doc["entity_id"] = HA_SWITCH_ENTITY_ID;
+    String payload;
+    serializeJson(doc, payload);
+
+    http.setTimeout(3000);
+    http.addHeader("Authorization", String("Bearer ") + HA_API_TOKEN);
+    http.addHeader("Content-Type", "application/json");
+    httpCode = http.POST(payload);
+    http.end();
+    return httpCode >= HTTP_CODE_OK && httpCode < 300;
+}
+
+static void pollHomeAssistant() {
+    char switchState[32];
+    char temperature[48];
+    char humidity[48];
+    int httpCode = 0;
+
+    if (!getHomeAssistantState(HA_SWITCH_ENTITY_ID, switchState, sizeof(switchState), httpCode) ||
+        !getHomeAssistantState(HA_TEMPERATURE_ENTITY_ID, temperature, sizeof(temperature), httpCode) ||
+        !getHomeAssistantState(HA_HUMIDITY_ENTITY_ID, humidity, sizeof(humidity), httpCode)) {
+        char status[48];
+        snprintf(status, sizeof(status), "HA API error (%d)", httpCode);
+        updateHomeAssistantUI(nullptr, nullptr, nullptr, status);
+        Serial.printf("[Home Assistant] State request failed (HTTP %d).\n", httpCode);
+        return;
+    }
+
+    updateHomeAssistantUI(switchState, temperature, humidity, "Connected");
+}
 
 // --- Wi-Fi Event Handlers ---
 void onWiFiGotIP(WiFiEvent_t event, WiFiEventInfo_t info) {
@@ -136,6 +235,8 @@ void setup() {
 
     // Initialize UI layouts
     initUI();
+    updateHomeAssistantUI(nullptr, nullptr, nullptr,
+        homeAssistantConfigured() ? "Waiting for Home Assistant" : "Add HA_API_TOKEN in config/secrets.h");
     screensaver.begin();
 
     // Load offline cache on boot if available
@@ -212,8 +313,20 @@ void setup() {
             settings_orientation_changed = true;
         } else if (topic.endsWith("command/update_interval")) {
             int interval = payload.toInt();
-            if (interval >= 1 && interval <= 120) {
+            int minimumInterval = settings.getWeatherApiSource() == WEATHER_API_BPF ? 60 : 8;
+            if (interval >= minimumInterval && interval <= 120) {
                 settings.setWeatherUpdateInterval(interval);
+            } else {
+                Serial.printf("[MQTT] Update interval must be between %d and 120 minutes for the selected weather API.\n",
+                    minimumInterval);
+            }
+        } else if (topic.endsWith("command/weather_api")) {
+            if (payload == "Global Spot") {
+                settings.setWeatherApiSource(WEATHER_API_GLOBAL_SPOT);
+            } else if (payload == "BPF") {
+                settings.setWeatherApiSource(WEATHER_API_BPF);
+            } else {
+                Serial.printf("[MQTT] Ignoring invalid weather API source: %s\n", payload.c_str());
             }
         } else if (topic.endsWith("command/local_sensor")) {
             settings.setLocalSensorEnabled(payload == "ON");
@@ -287,6 +400,38 @@ void loop() {
     wifi.update();
 
     unsigned long currentMillis = millis();
+    if (lastWeatherApiSource != settings.getWeatherApiSource()) {
+        lastWeatherApiSource = settings.getWeatherApiSource();
+        hasInitialFetch = false;
+        pending_ui_sync = true;
+    }
+
+    static unsigned long lastHomeAssistantPoll = 0;
+    bool turnOn = false;
+    if (takeHomeAssistantSwitchRequest(turnOn)) {
+        if (!homeAssistantConfigured()) {
+            updateHomeAssistantUI(nullptr, nullptr, nullptr, "Add HA_API_TOKEN in config/secrets.h");
+        } else if (WiFi.status() != WL_CONNECTED) {
+            updateHomeAssistantUI(nullptr, nullptr, nullptr, "Home Assistant unavailable: Wi-Fi disconnected");
+        } else {
+            int httpCode = 0;
+            if (setHomeAssistantSwitch(turnOn, httpCode)) {
+                updateHomeAssistantUI(nullptr, nullptr, nullptr, "Command sent");
+                lastHomeAssistantPoll = 0;
+            } else {
+                char status[48];
+                snprintf(status, sizeof(status), "HA command failed (%d)", httpCode);
+                updateHomeAssistantUI(nullptr, nullptr, nullptr, status);
+                Serial.printf("[Home Assistant] Switch command failed (HTTP %d).\n", httpCode);
+            }
+        }
+    }
+
+    if (homeAssistantConfigured() && WiFi.status() == WL_CONNECTED &&
+        (lastHomeAssistantPoll == 0 || currentMillis - lastHomeAssistantPoll >= HOME_ASSISTANT_POLL_INTERVAL_MS)) {
+        lastHomeAssistantPoll = currentMillis;
+        pollHomeAssistant();
+    }
 
     // Sleep Schedule Logic
     static unsigned long lastSleepCheck = 0;
@@ -801,14 +946,13 @@ void loop() {
 #endif
 
                     lastWeatherUpdate = currentMillis;
+                    lastWeatherApiSource = settings.getWeatherApiSource();
                     hasInitialFetch = true;
                 } else {
                     Serial.println("[System] Weather fetch failed. Will retry next interval.");
-                    if (currentUpdateInterval > 60000UL) {
-                        lastWeatherUpdate = currentMillis - currentUpdateInterval + 60000UL;
-                    } else {
-                        lastWeatherUpdate = currentMillis;
-                    }
+                    lastWeatherUpdate = currentMillis;
+                    lastWeatherApiSource = settings.getWeatherApiSource();
+                    hasInitialFetch = true;
                 }
             }
         }
@@ -854,6 +998,8 @@ void loop() {
         }
         mqtt.publish("settings/screen_orientation", orientStr.c_str(), true);
         mqtt.publish("settings/update_interval", String(settings.getWeatherUpdateInterval()).c_str(), true);
+        mqtt.publish("settings/weather_api",
+            settings.getWeatherApiSource() == WEATHER_API_BPF ? "BPF" : "Global Spot", true);
         
         mqtt.publish("settings/local_sensor", settings.getLocalSensorEnabled() ? "ON" : "OFF", true);
         String sensTypeStr = "DHT22";

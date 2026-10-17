@@ -105,6 +105,7 @@ void MqttManager::onMqttConnect(bool sessionPresent) {
     subscribe("command/units", 0);
     subscribe("command/screen_orientation", 0);
     subscribe("command/update_interval", 0);
+    subscribe("command/weather_api", 0);
     subscribe("command/local_sensor", 0);
     subscribe("command/local_sensor_type", 0);
     subscribe("command/local_sensor_update_interval", 0);
@@ -223,8 +224,10 @@ void MqttManager::publishHADiscovery() {
     String orientPayload = "{\"name\":\"Screen Orientation\",\"state_topic\":\"" + _baseTopic + "settings/screen_orientation\",\"command_topic\":\"" + _baseTopic + "command/screen_orientation\",\"options\":[\"Landscape\",\"Portrait\",\"Portrait Rev\",\"Landscape Rev\"],\"entity_category\":\"config\",\"unique_id\":\"" + deviceId + "_orientation\"," + deviceJson + "}";
     _mqttClient.publish(("homeassistant/select/" + deviceId + "/orientation/config").c_str(), 0, true, orientPayload.c_str());
     // Update Interval (Number)
-    String updPayload = "{\"name\":\"Update Interval\",\"state_topic\":\"" + _baseTopic + "settings/update_interval\",\"command_topic\":\"" + _baseTopic + "command/update_interval\",\"min\":1,\"max\":120,\"unit_of_measurement\":\"min\",\"entity_category\":\"config\",\"unique_id\":\"" + deviceId + "_updint\"," + deviceJson + "}";
+    String updPayload = "{\"name\":\"Update Interval\",\"state_topic\":\"" + _baseTopic + "settings/update_interval\",\"command_topic\":\"" + _baseTopic + "command/update_interval\",\"min\":8,\"max\":120,\"unit_of_measurement\":\"min\",\"entity_category\":\"config\",\"unique_id\":\"" + deviceId + "_updint\"," + deviceJson + "}";
     _mqttClient.publish(("homeassistant/number/" + deviceId + "/update_interval/config").c_str(), 0, true, updPayload.c_str());
+    String weatherApiPayload = "{\"name\":\"Weather API\",\"state_topic\":\"" + _baseTopic + "settings/weather_api\",\"command_topic\":\"" + _baseTopic + "command/weather_api\",\"options\":[\"Global Spot\",\"BPF\"],\"entity_category\":\"config\",\"unique_id\":\"" + deviceId + "_weather_api\"," + deviceJson + "}";
+    _mqttClient.publish(("homeassistant/select/" + deviceId + "/weather_api/config").c_str(), 0, true, weatherApiPayload.c_str());
 
     vTaskDelay(pdMS_TO_TICKS(50));
 
